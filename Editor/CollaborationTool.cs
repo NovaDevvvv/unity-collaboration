@@ -43,6 +43,13 @@ public sealed class CollaborationTool : EditorWindow
         window.Show();
     }
 
+    [MenuItem("Collaborate/Refresh Version")]
+    private static void RefreshVersion()
+    {
+        OpenWindow();
+        Session.CheckForUpdatesNow();
+    }
+
     private void OnEnable()
     {
         titleContent = new GUIContent("Collaboration");
@@ -1190,6 +1197,11 @@ internal sealed class CollaborationSession
 
     public void CheckForUpdatesNow()
     {
+        if (!settingsLoaded)
+        {
+            githubPat = EditorPrefs.GetString(GitHubPatKey, "");
+            settingsLoaded = true;
+        }
         nextUpdateCheck = 0d;
         CheckForUpdate(true);
     }
