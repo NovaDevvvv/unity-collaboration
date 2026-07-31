@@ -3,7 +3,6 @@ using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -48,8 +47,17 @@ internal sealed class HostHeaderProxy : IDisposable
                 NetworkStream input = incoming.GetStream();
                 byte[] headerBytes = await ReadHeaders(input, token).ConfigureAwait(false);
                 string headers = Encoding.ASCII.GetString(headerBytes);
-                headers = Regex.Replace(headers, @"(?im)^Host:[^\r\n]*$",
-                    "Host: 127.0.0.1:" + targetPort);
+                string[] lines = headers.Split(new[] { "\r\n" }, StringSplitOptions.None);
+                bool replacedHost = false;
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    if (!lines[i].StartsWith("Host:", StringComparison.OrdinalIgnoreCase)) continue;
+                    lines[i] = "Host: 127.0.0.1:" + targetPort;
+                    replacedHost = true;
+                    break;
+                }
+                if (!replacedHost) throw new IOException("The forwarded request did not contain a Host header.");
+                headers = string.Join("\r\n", lines);
 
                 await outgoing.ConnectAsync(IPAddress.Loopback, targetPort).ConfigureAwait(false);
                 NetworkStream output = outgoing.GetStream();

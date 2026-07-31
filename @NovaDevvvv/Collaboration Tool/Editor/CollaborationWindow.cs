@@ -77,7 +77,7 @@ public sealed class CollaborationTool : EditorWindow
         }
         if (Session.Updating)
         {
-            DrawBusyScreen("Downloading Update", "v" + Session.UpdateHash);
+            DrawBusyScreen("Installing Update", "v" + Session.UpdateHash);
             return;
         }
         if (!Session.IsHost && Session.Connecting)
@@ -223,7 +223,7 @@ public sealed class CollaborationTool : EditorWindow
                 using (new EditorGUI.DisabledScope(Session.CheckingForUpdate))
                 {
                     string updateButton = Session.CheckingForUpdate ? "Checking…" :
-                        (Session.UpdateAvailable ? "Download " + Session.UpdateHash : "↻  Check for Updates");
+                        (Session.UpdateAvailable ? "Update to " + Session.UpdateHash : "↻  Check for Updates");
                     if (GUILayout.Button(updateButton, GUILayout.Width(145f), GUILayout.Height(25f)))
                     {
                         if (Session.UpdateAvailable) Session.InstallAvailableUpdate();
@@ -797,6 +797,7 @@ internal class CollaborationSessionImplementation
                 if (!context.Request.IsWebSocketRequest || context.Request.Url.AbsolutePath != "/collaboration/")
                 {
                     context.Response.StatusCode = 400;
+                    context.Response.Headers["X-Collaboration-Server"] = "true";
                     context.Response.Close();
                     continue;
                 }
@@ -1180,7 +1181,7 @@ internal class CollaborationSessionImplementation
                 foreach (string fileName in ToolFiles)
                     sources[fileName] = await web.DownloadStringTaskAsync(
                         new Uri(string.Format(RawToolUrl, commit, fileName)));
-            mainThread.Enqueue(() => StageDownloadedUpdate(commit, sources));
+            mainThread.Enqueue(() => InstallDownloadedUpdate(commit, sources));
         }
         catch (Exception exception)
         {
@@ -1272,41 +1273,48 @@ internal class CollaborationSessionImplementation
         return web;
     }
 
-    private void StageDownloadedUpdate(string commitSha, Dictionary<string, string> sources)
+    private void InstallDownloadedUpdate(string commitSha, Dictionary<string, string> sources)
     {
         try
         {
             string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
             string shortHash = commitSha.Substring(0, Math.Min(7, commitSha.Length));
-            string stagingDirectory = Path.Combine(projectRoot, "Library", "NovaDevvvv",
-                "Collaboration Update", shortHash);
-            foreach (KeyValuePair<string, string> source in sources)
+            string installDirectory = Path.GetFullPath(Path.Combine(projectRoot, UpdateService.InstallDirectory));
+            Directory.CreateDirectory(installDirectory);
+
+            // Downloading finishes before this method runs. Hold Unity's refresh
+            // while every replacement is prepared, then request one compilation.
+            AssetDatabase.DisallowAutoRefresh();
+            try
             {
-                string destination = Path.Combine(stagingDirectory, source.Key);
-                Directory.CreateDirectory(Path.GetDirectoryName(destination));
-                File.WriteAllText(destination, source.Value, new UTF8Encoding(false));
+                foreach (KeyValuePair<string, string> source in sources)
+                {
+                    string destination = Path.Combine(installDirectory, source.Key);
+                    string destinationDirectory = Path.GetDirectoryName(destination);
+                    if (!string.IsNullOrEmpty(destinationDirectory)) Directory.CreateDirectory(destinationDirectory);
+                    if (File.Exists(destination) &&
+                        string.Equals(File.ReadAllText(destination), source.Value, StringComparison.Ordinal)) continue;
+
+                    string temporaryPath = destination + ".update";
+                    File.WriteAllText(temporaryPath, source.Value, new UTF8Encoding(false));
+                    File.Copy(temporaryPath, destination, true);
+                    File.Delete(temporaryPath);
+                }
             }
-            File.WriteAllText(Path.Combine(stagingDirectory, "INSTALL AFTER CLOSING UNITY.txt"),
-                "Unity was not modified while it was running.\r\n\r\n" +
-                "Close Unity, then copy the Editor folder from this download into:\r\n" +
-                Path.Combine(projectRoot, UpdateService.InstallDirectory) + "\r\n\r\n" +
-                "Replace only the collaboration tool files. Keep this staged folder as a backup until the project opens successfully.",
-                new UTF8Encoding(false));
+            finally { AssetDatabase.AllowAutoRefresh(); }
+
+            EditorPrefs.SetString(InstalledCommitKey, commitSha);
+            availableUpdateCommit = "";
+            UpdateStatus = "Updated to " + shortHash;
+            UpdateHash = "";
             updating = false;
-            UpdateStatus = "Downloaded " + shortHash + " safely";
-            Debug.Log("Collaboration update " + shortHash + " downloaded safely to " + stagingDirectory +
-                      ". Unity project files were not changed.");
-            bool reveal = EditorUtility.DisplayDialog("Collaboration Update Downloaded",
-                "The update was downloaded outside Assets. Unity was not refreshed or recompiled.\n\n" +
-                "Close Unity before copying the staged Editor folder into the Collaboration Tool folder.",
-                "Show Downloaded Files", "Close");
-            if (reveal) EditorUtility.RevealInFinder(stagingDirectory);
-            Changed?.Invoke();
+            Debug.Log("Collaboration updated to " + shortHash + ". Unity is recompiling the editor scripts.");
+            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate);
         }
         catch (Exception exception)
         {
             updating = false;
-            Error = "The update could not be staged safely. No project files were changed.\n\n" + DescribeException(exception);
+            Error = "The update could not be installed.\n\n" + DescribeException(exception);
             Changed?.Invoke();
         }
     }
@@ -1551,14 +1559,7 @@ internal class CollaborationSessionImplementation
                     host.Equals("www.localhost.run", StringComparison.OrdinalIgnoreCase) ||
                     host.Equals("ssh.localhost.run", StringComparison.OrdinalIgnoreCase)) return;
                 string link = "https://" + host;
-                mainThread.Enqueue(() =>
-                {
-                    if (token.IsCancellationRequested || !Connected || !string.IsNullOrEmpty(ShareLink)) return;
-                    ShareLink = link;
-                    Status = "Server is online";
-                    ConnectionDetail = "Server link created. Waiting for playersâ€¦";
-                    Changed?.Invoke();
-                });
+                _ = ValidateBackupServerLink(link, process, token);
             }
             else if (args.Data.IndexOf("error", StringComparison.OrdinalIgnoreCase) >= 0 ||
                      args.Data.IndexOf("failed", StringComparison.OrdinalIgnoreCase) >= 0 ||
@@ -1594,6 +1595,46 @@ internal class CollaborationSessionImplementation
             ConnectionDetail = "Server link creation failed.";
             Changed?.Invoke();
         }
+    }
+
+    private async Task ValidateBackupServerLink(string link, Process process, CancellationToken token)
+    {
+        bool reachedLocalServer = await Task.Run(() =>
+        {
+            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(link + "/collaboration/");
+            request.Method = "GET";
+            request.Timeout = 10000;
+            request.ReadWriteTimeout = 10000;
+            try
+            {
+                using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                    return response.Headers["X-Collaboration-Server"] == "true";
+            }
+            catch (WebException exception)
+            {
+                using (HttpWebResponse response = exception.Response as HttpWebResponse)
+                    return response != null && response.Headers["X-Collaboration-Server"] == "true";
+            }
+            catch { return false; }
+        });
+
+        mainThread.Enqueue(() =>
+        {
+            if (token.IsCancellationRequested || !Connected || process != backupTunnel || process.HasExited) return;
+            if (reachedLocalServer)
+            {
+                ShareLink = link;
+                Status = "Server is online";
+                ConnectionDetail = "Server link verified. Waiting for players…";
+            }
+            else
+            {
+                serverServiceDetail = "The backup address was created, but its connection to Unity failed verification.";
+                ConnectionDetail = "Backup server verification failed.";
+                try { process.Kill(); } catch { }
+            }
+            Changed?.Invoke();
+        });
     }
 
     private async Task StopBackupTunnelAfterTimeout(Process process, CancellationToken token)
