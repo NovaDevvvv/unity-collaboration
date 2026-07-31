@@ -425,7 +425,6 @@ public sealed class CollaborationTool : EditorWindow
     }
 }
 
-[InitializeOnLoad]
 internal class CollaborationSessionImplementation
 {
     [Serializable]
@@ -466,6 +465,7 @@ internal class CollaborationSessionImplementation
     private HostHeaderProxy backupProxy;
     private string serverServiceDetail;
     private int serverLinkAttempt;
+    private bool validatingServerLink;
     private string localName;
     private string lastLocalScene;
     private double lastCursorSend;
@@ -510,8 +510,6 @@ internal class CollaborationSessionImplementation
     public long BytesReceived => Interlocked.Read(ref bytesReceived);
     public IReadOnlyList<CollaborationPlayer> Players => players;
     public IReadOnlyList<string> Chat => chat;
-
-    static CollaborationSessionImplementation() { }
 
     public CollaborationSessionImplementation()
     {
@@ -710,6 +708,7 @@ internal class CollaborationSessionImplementation
         ConnectionDetail = "";
         serverServiceDetail = "";
         serverLinkAttempt = 0;
+        validatingServerLink = false;
         if (wasConnected) Changed?.Invoke();
     }
 
@@ -1011,26 +1010,16 @@ internal class CollaborationSessionImplementation
 
     public void PublishDeletedAsset(string assetPath)
     {
-        if (!ShouldPublishAssetEvents || !IsSafeProjectPath(assetPath)) return;
-        SendProjectMessage(new CollaborationMessage { type = "delete", id = LocalId, path = NormalizePath(assetPath) });
-        string metaPath = assetPath + ".meta";
-        SendProjectMessage(new CollaborationMessage { type = "delete", id = LocalId, path = NormalizePath(metaPath) });
+        // Deletions are never transmitted. Keeping an obsolete remote file is
+        // safer than allowing a collaboration message to remove project data.
     }
 
     public void PublishMovedAsset(string from, string to)
     {
         if (!ShouldPublishAssetEvents || !IsSafeProjectPath(from) || !IsSafeProjectPath(to)) return;
-        // Folder moves would require recursive deletion/replacement on another machine.
-        // Only individual files are synchronized to keep remote operations recoverable.
         if (Directory.Exists(ToAbsolutePath(to))) return;
-        SendProjectMessage(new CollaborationMessage
-        {
-            type = "move", id = LocalId, path = NormalizePath(from), path2 = NormalizePath(to)
-        });
-        SendProjectMessage(new CollaborationMessage
-        {
-            type = "move", id = LocalId, path = NormalizePath(from + ".meta"), path2 = NormalizePath(to + ".meta")
-        });
+        // Peers receive the new file but retain the old one. This makes moves
+        // non-destructive across projects.
         PublishImportedAsset(to);
     }
 
@@ -1085,46 +1074,13 @@ internal class CollaborationSessionImplementation
             }
             else if (message.type == "delete")
             {
-                if (File.Exists(absolutePath))
-                {
-                    if (path.EndsWith(".meta", StringComparison.OrdinalIgnoreCase))
-                        File.Delete(absolutePath);
-                    else if (!AssetDatabase.MoveAssetToTrash(path))
-                    {
-                        Error = "A remote file could not be moved to the Recycle Bin, so it was not deleted.";
-                        return;
-                    }
-                }
-                else if (Directory.Exists(absolutePath))
-                {
-                    Error = "A remote user attempted to delete a folder. Folder deletion is blocked for safety.";
-                    return;
-                }
+                Error = "A remote deletion was ignored for project safety.";
+                return;
             }
-            else
+            else if (message.type == "move")
             {
-                string destination = ToAbsolutePath(message.path2);
-                string directory = Path.GetDirectoryName(destination);
-                if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
-                if (File.Exists(absolutePath))
-                {
-                    if (File.Exists(destination))
-                    {
-                        Error = "A remote move would overwrite an existing file. The move was blocked for safety.";
-                        return;
-                    }
-                    if (Directory.Exists(destination))
-                    {
-                        Error = "A remote user attempted to replace a folder with a file. The move was blocked for safety.";
-                        return;
-                    }
-                    File.Move(absolutePath, destination);
-                }
-                else if (Directory.Exists(absolutePath))
-                {
-                    Error = "A remote user attempted to move a folder. Folder moves are blocked for safety.";
-                    return;
-                }
+                Error = "A remote move was ignored for project safety.";
+                return;
             }
 
             string importPath = message.type == "move" ? NormalizePath(message.path2) : path;
@@ -1326,14 +1282,7 @@ internal class CollaborationSessionImplementation
             }
             string desiredEditorDirectory = Path.Combine(installDirectory, "Editor");
             if (!string.Equals(previousDirectory, desiredEditorDirectory, StringComparison.OrdinalIgnoreCase))
-            {
-                foreach (string oldFile in ToolFiles)
-                    DeleteInstalledFile(Path.Combine(previousDirectory, oldFile));
-                DeleteInstalledFile(Path.Combine(previousDirectory, "CollaborationTool.cs"));
-                DeleteInstalledFile(Path.Combine(previousDirectory, "CollaborationModels.cs"));
-                DeleteInstalledFile(Path.Combine(previousDirectory, "CollaborationAssetSyncProcessor.cs"));
-                DeleteInstalledFile(Path.Combine(previousDirectory, "CollaborationWindow.cs"));
-            }
+                Debug.LogWarning("Previous collaboration scripts were left untouched for safety. Remove them manually after Unity restarts.");
             Debug.Log("Collaboration updated from GitHub to commit " + commitSha.Substring(0, 7) + ".");
 
             EditorPrefs.SetString(InstalledCommitKey, commitSha);
@@ -1348,12 +1297,6 @@ internal class CollaborationSessionImplementation
             Debug.LogWarning("Collaboration: could not install the GitHub update: " + exception.Message);
             Changed?.Invoke();
         }
-    }
-
-    private static void DeleteInstalledFile(string path)
-    {
-        if (File.Exists(path)) File.Delete(path);
-        if (File.Exists(path + ".meta")) File.Delete(path + ".meta");
     }
 
     private static string FindToolAssetPath()
@@ -1407,9 +1350,19 @@ internal class CollaborationSessionImplementation
         if (string.IsNullOrWhiteSpace(path)) return false;
         string normalized = NormalizePath(path);
         if (!normalized.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase)) return false;
-        string root = Path.GetFullPath(Path.Combine(Application.dataPath, "..")) + Path.DirectorySeparatorChar;
-        string absolute = Path.GetFullPath(Path.Combine(root, normalized.Replace('/', Path.DirectorySeparatorChar)));
-        return absolute.StartsWith(root, StringComparison.OrdinalIgnoreCase);
+        if (normalized.StartsWith("Assets/@NovaDevvvv/Collaboration Tool/", StringComparison.OrdinalIgnoreCase)) return false;
+        string contentPath = normalized.EndsWith(".meta", StringComparison.OrdinalIgnoreCase)
+            ? normalized.Substring(0, normalized.Length - 5)
+            : normalized;
+        string extension = Path.GetExtension(contentPath).ToLowerInvariant();
+        if (extension == ".cs" || extension == ".dll" || extension == ".asmdef" ||
+            extension == ".asmref" || extension == ".rsp" || extension == ".mdb" ||
+            extension == ".pdb") return false;
+        string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+        string assetsRoot = Path.GetFullPath(Application.dataPath) + Path.DirectorySeparatorChar;
+        string absolute = Path.GetFullPath(Path.Combine(projectRoot,
+            normalized.Replace('/', Path.DirectorySeparatorChar)));
+        return absolute.StartsWith(assetsRoot, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string NormalizePath(string path) => (path ?? "").Replace('\\', '/').TrimStart('/');
@@ -1455,13 +1408,7 @@ internal class CollaborationSessionImplementation
             Match match = Regex.Match(args.Data, @"https://(?!api\.)[a-zA-Z0-9-]+\.trycloudflare\.com",
                 RegexOptions.IgnoreCase);
             if (match.Success)
-                mainThread.Enqueue(() =>
-                {
-                    ShareLink = match.Value;
-                    Status = "Server is online";
-                    ConnectionDetail = "Server link created. Waiting for players…";
-                    Changed?.Invoke();
-                });
+                _ = ValidatePrimaryServerLink(match.Value, process, sessionToken);
         };
         process.OutputDataReceived += output;
         process.ErrorDataReceived += output;
@@ -1504,7 +1451,61 @@ internal class CollaborationSessionImplementation
             try { previousProcess.Dispose(); } catch { }
             if (token.IsCancellationRequested || !Connected || !string.IsNullOrEmpty(ShareLink)) return;
             serverServiceDetail = "";
+            validatingServerLink = false;
             StartCloudflared(port);
+        });
+    }
+
+    private async Task ValidatePrimaryServerLink(string link, Process process, CancellationToken token)
+    {
+        lock (peers)
+        {
+            if (validatingServerLink) return;
+            validatingServerLink = true;
+        }
+
+        Uri uri;
+        try { uri = new Uri(link); }
+        catch
+        {
+            validatingServerLink = false;
+            return;
+        }
+
+        for (int attempt = 0; attempt < 5 && !token.IsCancellationRequested; attempt++)
+        {
+            try
+            {
+                Task<IPAddress[]> lookup = Dns.GetHostAddressesAsync(uri.Host);
+                Task completed = await Task.WhenAny(lookup, Task.Delay(2000, token));
+                if (completed == lookup && lookup.Status == TaskStatus.RanToCompletion && lookup.Result.Length > 0)
+                {
+                    mainThread.Enqueue(() =>
+                    {
+                        if (token.IsCancellationRequested || !Connected || process.HasExited) return;
+                        ShareLink = link;
+                        Status = "Server is online";
+                        ConnectionDetail = "Server link created. Waiting for players…";
+                        validatingServerLink = false;
+                        Changed?.Invoke();
+                    });
+                    return;
+                }
+            }
+            catch { }
+
+            try { await Task.Delay(1000, token); }
+            catch (OperationCanceledException) { return; }
+        }
+
+        mainThread.Enqueue(() =>
+        {
+            validatingServerLink = false;
+            if (token.IsCancellationRequested || !Connected || !string.IsNullOrEmpty(ShareLink)) return;
+            serverServiceDetail = "The generated address could not be resolved by this computer's DNS service.";
+            ConnectionDetail = "Server address failed DNS validation. Retrying…";
+            Changed?.Invoke();
+            try { if (!process.HasExited) process.Kill(); } catch { }
         });
     }
 
