@@ -493,6 +493,7 @@ internal sealed class CollaborationSession
     private ClientWebSocket client;
     private Process cloudflared;
     private string serverServiceDetail;
+    private int serverLinkAttempt;
     private string localName;
     private string lastLocalScene;
     private double lastCursorSend;
@@ -726,6 +727,7 @@ internal sealed class CollaborationSession
         Error = "";
         ConnectionDetail = "";
         serverServiceDetail = "";
+        serverLinkAttempt = 0;
         if (wasConnected) Changed?.Invoke();
     }
 
@@ -1399,6 +1401,10 @@ internal sealed class CollaborationSession
 
     private void StartCloudflared(int port)
     {
+        serverLinkAttempt++;
+        CancellationToken sessionToken = cancellation?.Token ?? CancellationToken.None;
+        ConnectionDetail = "Creating server link… (attempt " + serverLinkAttempt + " of 3)";
+        Changed?.Invoke();
         ProcessStartInfo info = new ProcessStartInfo
         {
             FileName = "cloudflared",
@@ -1411,7 +1417,8 @@ internal sealed class CollaborationSession
             RedirectStandardOutput = true,
             RedirectStandardError = true
         };
-        cloudflared = new Process { StartInfo = info, EnableRaisingEvents = true };
+        Process process = new Process { StartInfo = info, EnableRaisingEvents = true };
+        cloudflared = process;
         DataReceivedEventHandler output = (_, args) =>
         {
             if (string.IsNullOrEmpty(args.Data)) return;
@@ -1429,27 +1436,45 @@ internal sealed class CollaborationSession
                     Changed?.Invoke();
                 });
         };
-        cloudflared.OutputDataReceived += output;
-        cloudflared.ErrorDataReceived += output;
-        cloudflared.Exited += (_, __) =>
+        process.OutputDataReceived += output;
+        process.ErrorDataReceived += output;
+        process.Exited += (_, __) =>
         {
             if (Connected && string.IsNullOrEmpty(ShareLink))
             {
-                string detail = string.IsNullOrEmpty(serverServiceDetail) ? "No additional details were reported." : serverServiceDetail;
-                QueueError("The server stopped before creating a share link.\n\n" + detail);
+                if (serverLinkAttempt < 3)
+                    _ = RetryServerLink(port, process, sessionToken);
+                else
+                {
+                    string detail = string.IsNullOrEmpty(serverServiceDetail) ? "No additional details were reported." : serverServiceDetail;
+                    QueueError("The server stopped before creating a share link after 3 attempts.\n\n" + detail);
+                }
             }
         };
         try
         {
-            cloudflared.Start();
-            cloudflared.BeginOutputReadLine();
-            cloudflared.BeginErrorReadLine();
+            process.Start();
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
         }
         catch (Exception exception)
         {
             Error = "The server link could not be created. Make sure the server service is installed and available, then try again.\n\n" + DescribeException(exception);
             Changed?.Invoke();
         }
+    }
+
+    private async Task RetryServerLink(int port, Process previousProcess, CancellationToken token)
+    {
+        try { await Task.Delay(2000, token); }
+        catch (OperationCanceledException) { return; }
+        mainThread.Enqueue(() =>
+        {
+            try { previousProcess.Dispose(); } catch { }
+            if (token.IsCancellationRequested || !Connected || !string.IsNullOrEmpty(ShareLink)) return;
+            serverServiceDetail = "";
+            StartCloudflared(port);
+        });
     }
 
     private static string SanitizeServiceMessage(string message)
