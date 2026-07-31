@@ -12,7 +12,6 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEditor;
-using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using Debug = UnityEngine.Debug;
@@ -417,27 +416,18 @@ public sealed class CollaborationTool : EditorWindow
     private static void OnSceneGUI(SceneView sceneView)
     {
         if (!Session.Connected) return;
-        Event current = Event.current;
-        if (current != null && current.mousePosition.x >= 0f && current.mousePosition.y >= 0f &&
-            current.mousePosition.x <= sceneView.position.width && current.mousePosition.y <= sceneView.position.height)
-        {
-            Session.UpdateCursor(current.mousePosition.x / sceneView.position.width,
-                                 current.mousePosition.y / sceneView.position.height);
-        }
-
-        Handles.BeginGUI();
+        if (sceneView.camera != null)
+            Session.UpdateCameraPose(sceneView.camera.transform.position, sceneView.camera.transform.rotation);
         foreach (CollaborationPlayer player in Session.Players.ToArray())
         {
-            if (player.Id == Session.LocalId || player.CursorX < 0f) continue;
-            float x = player.CursorX * sceneView.position.width;
-            float y = player.CursorY * sceneView.position.height;
-            Color previous = GUI.color;
-            GUI.color = player.Color;
-            GUI.Label(new Rect(x - 4f, y - 24f, 160f, 20f), player.Name, EditorStyles.boldLabel);
-            GUI.Label(new Rect(x - 5f, y - 7f, 28f, 28f), "▶", EditorStyles.boldLabel);
-            GUI.color = previous;
+            if (player.Id == Session.LocalId || !player.HasCameraPose) continue;
+            float size = HandleUtility.GetHandleSize(player.CameraPosition) * 0.7f;
+            Color previous = Handles.color;
+            Handles.color = player.Color;
+            Handles.ArrowHandleCap(0, player.CameraPosition, player.CameraRotation, size, EventType.Repaint);
+            Handles.Label(player.CameraPosition + Vector3.up * size * 0.35f, player.Name, EditorStyles.boldLabel);
+            Handles.color = previous;
         }
-        Handles.EndGUI();
     }
 }
 
@@ -485,15 +475,19 @@ internal class CollaborationSessionImplementation
     private bool validatingServerLink;
     private string localName;
     private string lastLocalScene;
-    private double lastCursorSend;
+    private double lastPresenceSend;
+    private double lastTransformScan;
     private double lastPingSend;
-    private float pendingCursorX = -1f;
-    private float pendingCursorY = -1f;
+    private Vector3 pendingCameraPosition;
+    private Quaternion pendingCameraRotation = Quaternion.identity;
+    private bool cameraPoseDirty;
+    private readonly Dictionary<string, string> transformStates = new Dictionary<string, string>();
+    private bool applyingRemoteTransform;
+    private bool transformSnapshotReady;
     private long packetsSent;
     private long packetsReceived;
     private long bytesSent;
     private long bytesReceived;
-    private double saveAt = -1d;
     private double suppressAssetEventsUntil;
     private double nextUpdateCheck;
     private bool checkingForUpdate;
@@ -533,9 +527,6 @@ internal class CollaborationSessionImplementation
         EditorApplication.update += Update;
         AssemblyReloadEvents.beforeAssemblyReload += Close;
         EditorApplication.quitting += Close;
-        Undo.postprocessModifications += OnPostprocessModifications;
-        EditorApplication.hierarchyChanged += ScheduleProjectSave;
-        ObjectChangeEvents.changesPublished += OnObjectChanges;
         EditorApplication.delayCall += InitializeEditorState;
     }
 
@@ -658,10 +649,13 @@ internal class CollaborationSessionImplementation
         else _ = SendClient(message);
     }
 
-    public void UpdateCursor(float x, float y)
+    public void UpdateCameraPose(Vector3 position, Quaternion rotation)
     {
-        pendingCursorX = Mathf.Clamp01(x);
-        pendingCursorY = Mathf.Clamp01(y);
+        if (Vector3.SqrMagnitude(position - pendingCameraPosition) < 0.0001f &&
+            Quaternion.Angle(rotation, pendingCameraRotation) < 0.1f) return;
+        pendingCameraPosition = position;
+        pendingCameraRotation = rotation;
+        cameraPoseDirty = true;
     }
 
     private void PublishLocalScene(string sceneName)
@@ -744,6 +738,8 @@ internal class CollaborationSessionImplementation
         ShareLink = "";
         PingMs = host ? 0 : -1;
         packetsSent = packetsReceived = bytesSent = bytesReceived = 0;
+        transformStates.Clear();
+        transformSnapshotReady = false;
     }
 
     private void Update()
@@ -758,28 +754,26 @@ internal class CollaborationSessionImplementation
         if (!string.Equals(activeScene, lastLocalScene, StringComparison.Ordinal))
             PublishLocalScene(activeScene);
 
-        if (saveAt > 0d && now >= saveAt)
+        if (cameraPoseDirty && now - lastPresenceSend > 0.1d)
         {
-            saveAt = -1d;
-            SaveChangedProjectState();
-        }
-        if (pendingCursorX >= 0f && now - lastCursorSend > 0.066)
-        {
-            lastCursorSend = now;
-            CollaborationMessage cursor = new CollaborationMessage
+            lastPresenceSend = now;
+            CollaborationMessage presence = new CollaborationMessage
             {
-                type = "cursor", id = LocalId, name = localName, x = pendingCursorX, y = pendingCursorY
+                type = "camera", id = LocalId, name = localName,
+                x = pendingCameraPosition.x, y = pendingCameraPosition.y, z = pendingCameraPosition.z,
+                qx = pendingCameraRotation.x, qy = pendingCameraRotation.y,
+                qz = pendingCameraRotation.z, qw = pendingCameraRotation.w
             };
-            if (IsHost) _ = Broadcast(cursor); else _ = SendClient(cursor);
-            pendingCursorX = -1f;
-            SceneView.RepaintAll();
+            if (IsHost) _ = Broadcast(presence); else _ = SendClient(presence);
+            cameraPoseDirty = false;
         }
-        if (!IsHost && now - lastPingSend > 2.0)
+        if (now - lastTransformScan > 0.1d) { lastTransformScan = now; PublishChangedTransforms(); }
+        if (!IsHost && now - lastPingSend > 1.0)
         {
             lastPingSend = now;
             _ = SendClient(new CollaborationMessage { type = "ping", stamp = DateTime.UtcNow.Ticks });
         }
-        else if (IsHost && now - lastPingSend > 2.0)
+        else if (IsHost && now - lastPingSend > 1.0)
         {
             lastPingSend = now;
             long stamp = DateTime.UtcNow.Ticks;
@@ -795,16 +789,30 @@ internal class CollaborationSessionImplementation
             try
             {
                 TcpClient connection = await listener.AcceptTcpClientAsync();
-                WebSocket socket = await CollaborationServer.AcceptWebSocket(connection, token);
-                if (socket == null) { connection.Dispose(); continue; }
-                Peer peer = new Peer { Id = Guid.NewGuid().ToString("N"), Socket = socket, Transport = connection };
-                _ = PeerReceiveLoop(peer, token);
+                connection.NoDelay = true;
+                _ = AcceptConnection(connection, token);
             }
             catch (Exception exception)
             {
                 if (!token.IsCancellationRequested) QueueError("Server listener stopped.\n\n" + DescribeException(exception));
                 break;
             }
+        }
+    }
+
+    private async Task AcceptConnection(TcpClient connection, CancellationToken token)
+    {
+        try
+        {
+            WebSocket socket = await CollaborationServer.AcceptWebSocket(connection, token);
+            if (socket == null) { connection.Dispose(); return; }
+            Peer peer = new Peer { Id = Guid.NewGuid().ToString("N"), Socket = socket, Transport = connection };
+            _ = PeerReceiveLoop(peer, token);
+        }
+        catch (Exception exception)
+        {
+            connection.Dispose();
+            if (!token.IsCancellationRequested) QueueError("A connection handshake failed.\n\n" + DescribeException(exception));
         }
     }
 
@@ -905,13 +913,15 @@ internal class CollaborationSessionImplementation
         mainThread.Enqueue(() =>
         {
             if (message.type == "chat") AddChat(message.name, message.text);
-            else if (message.type == "cursor")
+            else if (message.type == "camera")
             {
                 CollaborationPlayer player = AddOrUpdatePlayer(message.id, message.name, message.id == LocalId && IsHost);
-                player.CursorX = message.x;
-                player.CursorY = message.y;
+                player.CameraPosition = new Vector3(message.x, message.y, message.z);
+                player.CameraRotation = new Quaternion(message.qx, message.qy, message.qz, message.qw);
+                player.HasCameraPose = true;
                 SceneView.RepaintAll();
             }
+            else if (message.type == "transform") ApplyRemoteTransform(message);
             else if (message.type == "roster")
             {
                 HashSet<string> current = new HashSet<string>(message.ids ?? Array.Empty<string>());
@@ -1020,6 +1030,7 @@ internal class CollaborationSessionImplementation
     public void PublishImportedAsset(string assetPath)
     {
         if (!ShouldPublishAssetEvents || !IsSafeProjectPath(assetPath)) return;
+        if (assetPath.EndsWith(".unity", StringComparison.OrdinalIgnoreCase)) return;
         string metaPath = assetPath + ".meta";
         if (File.Exists(ToAbsolutePath(metaPath)))
             SendProjectFile(metaPath);
@@ -1104,7 +1115,6 @@ internal class CollaborationSessionImplementation
             string importPath = message.type == "move" ? NormalizePath(message.path2) : path;
             if (!importPath.EndsWith(".meta", StringComparison.OrdinalIgnoreCase))
                 AssetDatabase.ImportAsset(importPath, ImportAssetOptions.ForceUpdate);
-            ReloadSceneIfOpen(importPath);
         }
         catch (Exception exception)
         {
@@ -1112,45 +1122,53 @@ internal class CollaborationSessionImplementation
         }
     }
 
-    private void ReloadSceneIfOpen(string path)
+    private void PublishChangedTransforms()
     {
-        if (!path.EndsWith(".unity", StringComparison.OrdinalIgnoreCase)) return;
-        for (int i = 0; i < SceneManager.sceneCount; i++)
+        if (!Connected || applyingRemoteTransform) return;
+        bool publish = transformSnapshotReady;
+        foreach (Transform transform in UnityEngine.Object.FindObjectsOfType<Transform>())
         {
-            Scene scene = SceneManager.GetSceneAt(i);
-            if (!string.Equals(NormalizePath(scene.path), NormalizePath(path), StringComparison.OrdinalIgnoreCase)) continue;
-            bool active = scene == SceneManager.GetActiveScene();
-            EditorApplication.delayCall += () =>
-            {
-                suppressAssetEventsUntil = EditorApplication.timeSinceStartup + 3d;
-                if (active)
-                    EditorSceneManager.OpenScene(path, OpenSceneMode.Single);
-                else
-                {
-                    Scene existing = SceneManager.GetSceneByPath(path);
-                    if (existing.IsValid()) EditorSceneManager.CloseScene(existing, true);
-                    EditorSceneManager.OpenScene(path, OpenSceneMode.Additive);
-                }
-            };
-            break;
+            if (!transform.gameObject.scene.IsValid() || !transform.gameObject.scene.isLoaded) continue;
+            string id = GlobalObjectId.GetGlobalObjectIdSlow(transform).ToString();
+            string state = TransformState(transform);
+            if (transformStates.TryGetValue(id, out string previous) && previous == state) continue;
+            transformStates[id] = state;
+            if (!publish) continue;
+            Vector3 p = transform.localPosition;
+            Quaternion r = transform.localRotation;
+            Vector3 s = transform.localScale;
+            SendProjectMessage(new CollaborationMessage { type = "transform", id = LocalId, objectId = id,
+                x = p.x, y = p.y, z = p.z, qx = r.x, qy = r.y, qz = r.z, qw = r.w,
+                sx = s.x, sy = s.y, sz = s.z });
         }
+        transformSnapshotReady = true;
     }
 
-    private UndoPropertyModification[] OnPostprocessModifications(UndoPropertyModification[] modifications)
+    private void ApplyRemoteTransform(CollaborationMessage message)
     {
-        ScheduleProjectSave();
-        return modifications;
+        if (string.IsNullOrEmpty(message.objectId) ||
+            !GlobalObjectId.TryParse(message.objectId, out GlobalObjectId globalId)) return;
+        Transform transform = GlobalObjectId.GlobalObjectIdentifierToObjectSlow(globalId) as Transform;
+        if (transform == null) return;
+        applyingRemoteTransform = true;
+        try
+        {
+            transform.localPosition = new Vector3(message.x, message.y, message.z);
+            transform.localRotation = new Quaternion(message.qx, message.qy, message.qz, message.qw);
+            transform.localScale = new Vector3(message.sx, message.sy, message.sz);
+            EditorUtility.SetDirty(transform);
+            transformStates[message.objectId] = TransformState(transform);
+            SceneView.RepaintAll();
+        }
+        finally { applyingRemoteTransform = false; }
     }
 
-    private void OnObjectChanges(ref ObjectChangeEventStream stream)
+    private static string TransformState(Transform transform)
     {
-        ScheduleProjectSave();
-    }
-
-    private void ScheduleProjectSave()
-    {
-        if (Connected && ShouldPublishAssetEvents && saveAt < 0d)
-            saveAt = EditorApplication.timeSinceStartup + 0.2d;
+        Vector3 p = transform.localPosition;
+        Quaternion r = transform.localRotation;
+        Vector3 s = transform.localScale;
+        return p.x + "," + p.y + "," + p.z + "|" + r.x + "," + r.y + "," + r.z + "," + r.w + "|" + s.x + "," + s.y + "," + s.z;
     }
 
     public void CheckForUpdatesNow()
@@ -1334,31 +1352,6 @@ internal class CollaborationSessionImplementation
             }
         }
         return null;
-    }
-
-    private void SaveChangedProjectState()
-    {
-        if (!Connected || !ShouldPublishAssetEvents) return;
-        try
-        {
-            for (int i = 0; i < SceneManager.sceneCount; i++)
-            {
-                Scene scene = SceneManager.GetSceneAt(i);
-                if (scene.isDirty && !string.IsNullOrEmpty(scene.path))
-                {
-                    EditorSceneManager.SaveScene(scene);
-                    PublishImportedAsset(scene.path);
-                }
-            }
-            PrefabStage stage = PrefabStageUtility.GetCurrentPrefabStage();
-            if (stage != null && stage.scene.isDirty)
-            {
-                PrefabUtility.SaveAsPrefabAsset(stage.prefabContentsRoot, stage.assetPath);
-                PublishImportedAsset(stage.assetPath);
-            }
-            AssetDatabase.SaveAssets();
-        }
-        catch (Exception exception) { Error = "Could not save a changed asset for syncing: " + exception.Message; }
     }
 
     private static bool IsSafeProjectPath(string path)

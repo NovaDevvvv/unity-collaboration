@@ -7,7 +7,8 @@ internal sealed class CollaborationPlayer
     public string SceneName;
     public bool IsHost;
     public int PingMs = -1;
-    public float CursorX = -1f;
-    public float CursorY = -1f;
+    public Vector3 CameraPosition;
+    public Quaternion CameraRotation = Quaternion.identity;
+    public bool HasCameraPose;
     public Color Color;
 }
