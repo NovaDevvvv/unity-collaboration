@@ -504,6 +504,7 @@ internal sealed class CollaborationSession
     private bool updating;
     private string githubPat;
     private string availableUpdateCommit;
+    private bool settingsLoaded;
 
     public event Action Changed;
     public bool IsHost { get; private set; }
@@ -534,18 +535,26 @@ internal sealed class CollaborationSession
 
     public CollaborationSession()
     {
-        githubPat = EditorPrefs.GetString(GitHubPatKey, "");
         EditorApplication.update += Update;
         AssemblyReloadEvents.beforeAssemblyReload += Close;
         EditorApplication.quitting += Close;
         Undo.postprocessModifications += OnPostprocessModifications;
         EditorApplication.hierarchyChanged += ScheduleProjectSave;
         ObjectChangeEvents.changesPublished += OnObjectChanges;
-        EditorApplication.delayCall += () => CheckForUpdate();
+        EditorApplication.delayCall += InitializeEditorState;
+    }
+
+    private void InitializeEditorState()
+    {
+        githubPat = EditorPrefs.GetString(GitHubPatKey, "");
+        settingsLoaded = true;
+        CheckForUpdate();
+        Changed?.Invoke();
     }
 
     public void SetGitHubPat(string value)
     {
+        settingsLoaded = true;
         githubPat = (value ?? "").Trim();
         if (string.IsNullOrEmpty(githubPat)) EditorPrefs.DeleteKey(GitHubPatKey);
         else EditorPrefs.SetString(GitHubPatKey, githubPat);
@@ -730,7 +739,7 @@ internal sealed class CollaborationSession
         while (mainThread.TryDequeue(out Action action))
             action();
         double now = EditorApplication.timeSinceStartup;
-        if (now >= nextUpdateCheck) CheckForUpdate();
+        if (settingsLoaded && now >= nextUpdateCheck) CheckForUpdate();
         if (!Connected) return;
 
         string activeScene = GetActiveSceneName();
