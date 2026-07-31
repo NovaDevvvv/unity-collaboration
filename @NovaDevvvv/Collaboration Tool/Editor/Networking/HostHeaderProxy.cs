@@ -30,7 +30,7 @@ internal sealed class HostHeaderProxy : IDisposable
         {
             while (!token.IsCancellationRequested)
             {
-                TcpClient incoming = await listener.AcceptTcpClientAsync();
+                TcpClient incoming = await listener.AcceptTcpClientAsync().ConfigureAwait(false);
                 _ = Forward(incoming, token);
             }
         }
@@ -46,19 +46,19 @@ internal sealed class HostHeaderProxy : IDisposable
             try
             {
                 NetworkStream input = incoming.GetStream();
-                byte[] headerBytes = await ReadHeaders(input, token);
+                byte[] headerBytes = await ReadHeaders(input, token).ConfigureAwait(false);
                 string headers = Encoding.ASCII.GetString(headerBytes);
                 headers = Regex.Replace(headers, @"(?im)^Host:[^\r\n]*$",
                     "Host: 127.0.0.1:" + targetPort);
 
-                await outgoing.ConnectAsync(IPAddress.Loopback, targetPort);
+                await outgoing.ConnectAsync(IPAddress.Loopback, targetPort).ConfigureAwait(false);
                 NetworkStream output = outgoing.GetStream();
                 byte[] rewritten = Encoding.ASCII.GetBytes(headers);
-                await output.WriteAsync(rewritten, 0, rewritten.Length, token);
+                await output.WriteAsync(rewritten, 0, rewritten.Length, token).ConfigureAwait(false);
 
                 Task upstream = Pump(input, output, token);
                 Task downstream = Pump(output, input, token);
-                await Task.WhenAny(upstream, downstream);
+                await Task.WhenAny(upstream, downstream).ConfigureAwait(false);
             }
             catch (OperationCanceledException) { }
             catch (IOException) { }
@@ -74,7 +74,7 @@ internal sealed class HostHeaderProxy : IDisposable
             int matched = 0;
             while (bytes.Length < 65536)
             {
-                int count = await stream.ReadAsync(one, 0, 1, token);
+                int count = await stream.ReadAsync(one, 0, 1, token).ConfigureAwait(false);
                 if (count == 0) throw new IOException("The forwarded connection closed before sending headers.");
                 bytes.WriteByte(one[0]);
                 bool expected = ((matched == 0 || matched == 2) && one[0] == '\r') ||
@@ -91,9 +91,9 @@ internal sealed class HostHeaderProxy : IDisposable
         byte[] buffer = new byte[16384];
         while (!token.IsCancellationRequested)
         {
-            int count = await source.ReadAsync(buffer, 0, buffer.Length, token);
+            int count = await source.ReadAsync(buffer, 0, buffer.Length, token).ConfigureAwait(false);
             if (count == 0) return;
-            await destination.WriteAsync(buffer, 0, count, token);
+            await destination.WriteAsync(buffer, 0, count, token).ConfigureAwait(false);
         }
     }
 
