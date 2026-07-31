@@ -358,6 +358,8 @@ internal sealed class CollaborationSession
     private const string RawToolUrl = "https://raw.githubusercontent.com/novadevvvv/unity-collaboration/{0}/Editor/CollaborationTool.cs";
     private const string InstalledCommitKey = "NovaDev.UnityCollaboration.InstalledCommit";
     private const double UpdateCheckInterval = 60d;
+    private const long MaxSyncedFileBytes = 8L * 1024L * 1024L;
+    private const int MaxMessageBytes = 12 * 1024 * 1024;
 
     private sealed class Peer
     {
@@ -810,6 +812,8 @@ internal sealed class CollaborationSession
             {
                 result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), token);
                 if (result.MessageType == WebSocketMessageType.Close) return null;
+                if (stream.Length + result.Count > MaxMessageBytes)
+                    throw new InvalidDataException("The collaboration server rejected a message larger than 12 MB.");
                 stream.Write(buffer, 0, result.Count);
             } while (!result.EndOfMessage);
             byte[] data = stream.ToArray();
@@ -852,6 +856,9 @@ internal sealed class CollaborationSession
     public void PublishMovedAsset(string from, string to)
     {
         if (!ShouldPublishAssetEvents || !IsSafeProjectPath(from) || !IsSafeProjectPath(to)) return;
+        // Folder moves would require recursive deletion/replacement on another machine.
+        // Only individual files are synchronized to keep remote operations recoverable.
+        if (Directory.Exists(ToAbsolutePath(to))) return;
         SendProjectMessage(new CollaborationMessage
         {
             type = "move", id = LocalId, path = NormalizePath(from), path2 = NormalizePath(to)
@@ -870,9 +877,9 @@ internal sealed class CollaborationSession
             string absolutePath = ToAbsolutePath(projectPath);
             if (!File.Exists(absolutePath)) return;
             FileInfo info = new FileInfo(absolutePath);
-            if (info.Length > 32L * 1024L * 1024L)
+            if (info.Length > MaxSyncedFileBytes)
             {
-                QueueError("Skipped syncing " + projectPath + " because it is larger than 32 MB.");
+                QueueError("Skipped syncing " + projectPath + " because it is larger than 8 MB.");
                 return;
             }
             SendProjectMessage(new CollaborationMessage
@@ -914,8 +921,21 @@ internal sealed class CollaborationSession
             }
             else if (message.type == "delete")
             {
-                if (File.Exists(absolutePath)) File.Delete(absolutePath);
-                else if (Directory.Exists(absolutePath)) Directory.Delete(absolutePath, true);
+                if (File.Exists(absolutePath))
+                {
+                    if (path.EndsWith(".meta", StringComparison.OrdinalIgnoreCase))
+                        File.Delete(absolutePath);
+                    else if (!AssetDatabase.MoveAssetToTrash(path))
+                    {
+                        Error = "A remote file could not be moved to the Recycle Bin, so it was not deleted.";
+                        return;
+                    }
+                }
+                else if (Directory.Exists(absolutePath))
+                {
+                    Error = "A remote user attempted to delete a folder. Folder deletion is blocked for safety.";
+                    return;
+                }
             }
             else
             {
@@ -924,13 +944,22 @@ internal sealed class CollaborationSession
                 if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
                 if (File.Exists(absolutePath))
                 {
-                    if (File.Exists(destination)) File.Delete(destination);
+                    if (File.Exists(destination))
+                    {
+                        Error = "A remote move would overwrite an existing file. The move was blocked for safety.";
+                        return;
+                    }
+                    if (Directory.Exists(destination))
+                    {
+                        Error = "A remote user attempted to replace a folder with a file. The move was blocked for safety.";
+                        return;
+                    }
                     File.Move(absolutePath, destination);
                 }
                 else if (Directory.Exists(absolutePath))
                 {
-                    if (Directory.Exists(destination)) Directory.Delete(destination, true);
-                    Directory.Move(absolutePath, destination);
+                    Error = "A remote user attempted to move a folder. Folder moves are blocked for safety.";
+                    return;
                 }
             }
 
@@ -1130,8 +1159,7 @@ internal sealed class CollaborationSession
     {
         if (string.IsNullOrWhiteSpace(path)) return false;
         string normalized = NormalizePath(path);
-        if (!normalized.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(normalized, "Assets", StringComparison.OrdinalIgnoreCase)) return false;
+        if (!normalized.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase)) return false;
         string root = Path.GetFullPath(Path.Combine(Application.dataPath, "..")) + Path.DirectorySeparatorChar;
         string absolute = Path.GetFullPath(Path.Combine(root, normalized.Replace('/', Path.DirectorySeparatorChar)));
         return absolute.StartsWith(root, StringComparison.OrdinalIgnoreCase);
