@@ -68,10 +68,10 @@ public sealed class CollaborationTool : EditorWindow
             return;
         }
 
-        EditorGUILayout.Space(14f);
+        EditorGUILayout.Space(8f);
         using (new EditorGUILayout.HorizontalScope())
         {
-            GUILayout.Space(14f);
+            GUILayout.Space(6f);
             using (new EditorGUILayout.VerticalScope())
             {
                 EditorGUILayout.LabelField("Collaboration", titleStyle);
@@ -82,7 +82,7 @@ public sealed class CollaborationTool : EditorWindow
                 else
                     DrawSetup();
             }
-            GUILayout.Space(14f);
+            GUILayout.Space(6f);
         }
     }
 
@@ -163,8 +163,6 @@ public sealed class CollaborationTool : EditorWindow
                     if (GUILayout.Button(Session.CheckingForUpdate ? "Checking…" : "↻  Check for Updates", GUILayout.Width(145f), GUILayout.Height(25f)))
                         Session.CheckForUpdatesNow();
                 }
-                if (!string.IsNullOrEmpty(Session.UpdateStatus))
-                    GUILayout.Label(Session.UpdateStatus, EditorStyles.miniLabel);
                 GUILayout.FlexibleSpace();
             }
             return;
