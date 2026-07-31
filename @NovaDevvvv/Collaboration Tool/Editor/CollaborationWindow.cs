@@ -112,7 +112,7 @@ public sealed class CollaborationTool : EditorWindow
     private void EnsureStyles()
     {
         if (titleStyle != null) return;
-        titleStyle = new GUIStyle(EditorStyles.boldLabel) { fontSize = 20, fixedHeight = 25f };
+        titleStyle = CollaborationStyles.Title();
         subtitleStyle = new GUIStyle(EditorStyles.label)
         {
             fontSize = 11,
@@ -425,39 +425,8 @@ public sealed class CollaborationTool : EditorWindow
     }
 }
 
-[Serializable]
-internal sealed class CollaborationMessage
-{
-    public string type;
-    public string id;
-    public string name;
-    public string text;
-    public float x;
-    public float y;
-    public long stamp;
-    public string[] ids;
-    public string[] names;
-    public string[] scenes;
-    public string scene;
-    public string path;
-    public string path2;
-    public string data;
-}
-
-internal sealed class CollaborationPlayer
-{
-    public string Id;
-    public string Name;
-    public string SceneName;
-    public bool IsHost;
-    public int PingMs = -1;
-    public float CursorX = -1f;
-    public float CursorY = -1f;
-    public Color Color;
-}
-
 [InitializeOnLoad]
-internal sealed class CollaborationSession
+internal class CollaborationSessionImplementation
 {
     [Serializable]
     private sealed class GitHubCommit
@@ -465,10 +434,11 @@ internal sealed class CollaborationSession
         public string sha;
     }
 
-    private const string LatestCommitUrl = "https://api.github.com/repos/novadevvvv/unity-collaboration/commits/main";
-    private const string RawToolUrl = "https://raw.githubusercontent.com/novadevvvv/unity-collaboration/{0}/Editor/CollaborationTool.cs";
-    private const string InstalledCommitKey = "NovaDev.UnityCollaboration.InstalledCommit";
-    private const string GitHubPatKey = "NovaDev.UnityCollaboration.GitHubPat";
+    private const string LatestCommitUrl = UpdateService.LatestCommitUrl;
+    private const string RawToolUrl = UpdateService.RawToolUrl;
+    private static readonly string[] ToolFiles = UpdateService.ToolFiles;
+    private const string InstalledCommitKey = CollaborationSettings.InstalledCommitKey;
+    private const string GitHubPatKey = CollaborationSettings.GitHubPatKey;
     private const double UpdateCheckInterval = 300d;
     private const long MaxSyncedFileBytes = 8L * 1024L * 1024L;
     private const int MaxMessageBytes = 12 * 1024 * 1024;
@@ -492,6 +462,7 @@ internal sealed class CollaborationSession
     private HttpListener listener;
     private ClientWebSocket client;
     private Process cloudflared;
+    private Process backupTunnel;
     private string serverServiceDetail;
     private int serverLinkAttempt;
     private string localName;
@@ -539,9 +510,9 @@ internal sealed class CollaborationSession
     public IReadOnlyList<CollaborationPlayer> Players => players;
     public IReadOnlyList<string> Chat => chat;
 
-    static CollaborationSession() { }
+    static CollaborationSessionImplementation() { }
 
-    public CollaborationSession()
+    public CollaborationSessionImplementation()
     {
         EditorApplication.update += Update;
         AssemblyReloadEvents.beforeAssemblyReload += Close;
@@ -715,9 +686,17 @@ internal sealed class CollaborationSession
             cloudflared?.Dispose();
         }
         catch { }
+        try
+        {
+            if (backupTunnel != null && !backupTunnel.HasExited)
+                backupTunnel.Kill();
+            backupTunnel?.Dispose();
+        }
+        catch { }
         listener = null;
         client = null;
         cloudflared = null;
+        backupTunnel = null;
         cancellation?.Dispose();
         cancellation = null;
         players.Clear();
@@ -1216,10 +1195,12 @@ internal sealed class CollaborationSession
         Changed?.Invoke();
         try
         {
-            string source;
+            Dictionary<string, string> sources = new Dictionary<string, string>();
             using (WebClient web = CreateGitHubClient())
-                source = await web.DownloadStringTaskAsync(new Uri(string.Format(RawToolUrl, commit)));
-            mainThread.Enqueue(() => InstallUpdate(commit, source));
+                foreach (string fileName in ToolFiles)
+                    sources[fileName] = await web.DownloadStringTaskAsync(
+                        new Uri(string.Format(RawToolUrl, commit, fileName)));
+            mainThread.Enqueue(() => InstallUpdate(commit, sources));
         }
         catch (Exception exception)
         {
@@ -1311,7 +1292,7 @@ internal sealed class CollaborationSession
         return web;
     }
 
-    private void InstallUpdate(string commitSha, string source)
+    private void InstallUpdate(string commitSha, Dictionary<string, string> sources)
     {
         try
         {
@@ -1319,27 +1300,44 @@ internal sealed class CollaborationSession
             if (string.IsNullOrEmpty(assetPath))
             {
                 updating = false;
-                Debug.LogWarning("Collaboration: an update is available, but the installed CollaborationTool.cs could not be located.");
+                Debug.LogWarning("Collaboration: an update is available, but the installed collaboration window script could not be located.");
                 Changed?.Invoke();
                 return;
             }
 
             string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
             string absolutePath = Path.GetFullPath(Path.Combine(projectRoot, assetPath));
-            if (!string.Equals(File.ReadAllText(absolutePath), source, StringComparison.Ordinal))
+            string previousDirectory = Path.GetDirectoryName(absolutePath);
+            string installDirectory = Path.GetFullPath(Path.Combine(projectRoot, UpdateService.InstallDirectory));
+            Directory.CreateDirectory(installDirectory);
+            foreach (KeyValuePair<string, string> source in sources)
             {
-                string temporaryPath = absolutePath + ".update";
-                File.WriteAllText(temporaryPath, source, new UTF8Encoding(false));
-                File.Copy(temporaryPath, absolutePath, true);
+                string destination = Path.Combine(installDirectory, source.Key);
+                Directory.CreateDirectory(Path.GetDirectoryName(destination));
+                if (File.Exists(destination) && string.Equals(File.ReadAllText(destination), source.Value, StringComparison.Ordinal))
+                    continue;
+                string temporaryPath = destination + ".update";
+                File.WriteAllText(temporaryPath, source.Value, new UTF8Encoding(false));
+                File.Copy(temporaryPath, destination, true);
                 File.Delete(temporaryPath);
-                Debug.Log("Collaboration updated automatically from GitHub to commit " + commitSha.Substring(0, 7) + ".");
             }
+            string desiredEditorDirectory = Path.Combine(installDirectory, "Editor");
+            if (!string.Equals(previousDirectory, desiredEditorDirectory, StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (string oldFile in ToolFiles)
+                    DeleteInstalledFile(Path.Combine(previousDirectory, oldFile));
+                DeleteInstalledFile(Path.Combine(previousDirectory, "CollaborationTool.cs"));
+                DeleteInstalledFile(Path.Combine(previousDirectory, "CollaborationModels.cs"));
+                DeleteInstalledFile(Path.Combine(previousDirectory, "CollaborationAssetSyncProcessor.cs"));
+                DeleteInstalledFile(Path.Combine(previousDirectory, "CollaborationWindow.cs"));
+            }
+            Debug.Log("Collaboration updated from GitHub to commit " + commitSha.Substring(0, 7) + ".");
 
             EditorPrefs.SetString(InstalledCommitKey, commitSha);
             availableUpdateCommit = "";
             updating = false;
             UpdateHash = "";
-            AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceUpdate);
+            AssetDatabase.Refresh(ImportAssetOptions.ForceUpdate);
         }
         catch (Exception exception)
         {
@@ -1347,6 +1345,12 @@ internal sealed class CollaborationSession
             Debug.LogWarning("Collaboration: could not install the GitHub update: " + exception.Message);
             Changed?.Invoke();
         }
+    }
+
+    private static void DeleteInstalledFile(string path)
+    {
+        if (File.Exists(path)) File.Delete(path);
+        if (File.Exists(path + ".meta")) File.Delete(path + ".meta");
     }
 
     private static string FindToolAssetPath()
@@ -1456,8 +1460,12 @@ internal sealed class CollaborationSession
                     _ = RetryServerLink(port, process, sessionToken);
                 else
                 {
-                    string detail = string.IsNullOrEmpty(serverServiceDetail) ? "No additional details were reported." : serverServiceDetail;
-                    QueueError("The server stopped before creating a share link after 3 attempts.\n\n" + detail);
+                    mainThread.Enqueue(() =>
+                    {
+                        try { process.Dispose(); } catch { }
+                        if (sessionToken.IsCancellationRequested || !Connected || !string.IsNullOrEmpty(ShareLink)) return;
+                        StartBackupTunnel(port, sessionToken);
+                    });
                 }
             }
         };
@@ -1487,16 +1495,88 @@ internal sealed class CollaborationSession
         });
     }
 
+    private void StartBackupTunnel(int port, CancellationToken token)
+    {
+        ConnectionDetail = "Primary link service unavailable. Trying backup serverâ€¦";
+        Changed?.Invoke();
+        ProcessStartInfo info = new ProcessStartInfo
+        {
+            FileName = "ssh",
+            Arguments = "-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 " +
+                        "-o ExitOnForwardFailure=yes -R 80:127.0.0.1:" + port + " nokey@localhost.run",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        Process process = new Process { StartInfo = info, EnableRaisingEvents = true };
+        backupTunnel = process;
+        DataReceivedEventHandler output = (_, args) =>
+        {
+            if (string.IsNullOrWhiteSpace(args.Data)) return;
+            Match match = Regex.Match(args.Data,
+                @"(?:https://)?([a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*\.(?:localhost\.run|lhr\.life|lhr\.rocks))",
+                RegexOptions.IgnoreCase);
+            if (match.Success)
+            {
+                string link = "https://" + match.Groups[1].Value;
+                mainThread.Enqueue(() =>
+                {
+                    if (token.IsCancellationRequested || !Connected || !string.IsNullOrEmpty(ShareLink)) return;
+                    ShareLink = link;
+                    Status = "Server is online";
+                    ConnectionDetail = "Server link created. Waiting for playersâ€¦";
+                    Changed?.Invoke();
+                });
+            }
+            else if (args.Data.IndexOf("error", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     args.Data.IndexOf("failed", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     args.Data.IndexOf("denied", StringComparison.OrdinalIgnoreCase) >= 0)
+                serverServiceDetail = SanitizeServiceMessage(args.Data);
+        };
+        process.OutputDataReceived += output;
+        process.ErrorDataReceived += output;
+        process.Exited += (_, __) => mainThread.Enqueue(() =>
+        {
+            if (token.IsCancellationRequested || !Connected || !string.IsNullOrEmpty(ShareLink) || backupTunnel != process) return;
+            string detail = string.IsNullOrEmpty(serverServiceDetail)
+                ? "The backup server closed before returning a public link."
+                : serverServiceDetail;
+            Error = "A public server link could not be created. The local server is still running.\n\n" + detail;
+            ConnectionDetail = "Server link creation failed.";
+            Changed?.Invoke();
+        });
+        try
+        {
+            process.Start();
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            _ = StopBackupTunnelAfterTimeout(process, token);
+        }
+        catch (Exception exception)
+        {
+            Error = "The backup server could not be started. Make sure Windows OpenSSH Client is installed.\n\n" + DescribeException(exception);
+            ConnectionDetail = "Server link creation failed.";
+            Changed?.Invoke();
+        }
+    }
+
+    private async Task StopBackupTunnelAfterTimeout(Process process, CancellationToken token)
+    {
+        try { await Task.Delay(30000, token); }
+        catch (OperationCanceledException) { return; }
+        mainThread.Enqueue(() =>
+        {
+            if (token.IsCancellationRequested || process != backupTunnel || !Connected ||
+                !string.IsNullOrEmpty(ShareLink) || process.HasExited) return;
+            serverServiceDetail = "The backup server did not return a public link within 30 seconds.";
+            try { process.Kill(); } catch { }
+        });
+    }
+
     private static string SanitizeServiceMessage(string message)
     {
-        string value = message ?? "";
-        if (value.IndexOf("Client.Timeout exceeded while awaiting headers", StringComparison.OrdinalIgnoreCase) >= 0 ||
-            value.IndexOf("context deadline exceeded", StringComparison.OrdinalIgnoreCase) >= 0)
-            return "The public link API did not respond before its timeout. The local server is running, but no public link could be issued. Wait a few minutes, or try another network/VPN and create the server again.";
-        value = Regex.Replace(value, @"https://api\.trycloudflare\.com/tunnel", "the server API", RegexOptions.IgnoreCase);
-        value = Regex.Replace(value, "cloudflared", "server service", RegexOptions.IgnoreCase);
-        value = Regex.Replace(value, "cloudflare", "server", RegexOptions.IgnoreCase);
-        return value.Length > 500 ? value.Substring(0, 500) : value;
+        return TunnelManager.SanitizeError(message);
     }
 
     private CollaborationPlayer AddOrUpdatePlayer(string id, string name, bool host)
@@ -1545,20 +1625,7 @@ internal sealed class CollaborationSession
 
     private static string DescribeException(Exception exception)
     {
-        if (exception == null) return "No technical details were provided.";
-        List<string> details = new List<string>();
-        for (Exception current = exception; current != null && details.Count < 6; current = current.InnerException)
-        {
-            string message = string.IsNullOrWhiteSpace(current.Message) ? current.GetType().Name : current.Message.Trim();
-            WebException web = current as WebException;
-            if (web != null) message += " [Network status: " + web.Status + "]";
-            WebSocketException socket = current as WebSocketException;
-            if (socket != null) message += " [WebSocket error: " + socket.NativeErrorCode + "]";
-            System.Net.Sockets.SocketException tcp = current as System.Net.Sockets.SocketException;
-            if (tcp != null) message += " [Socket error: " + tcp.SocketErrorCode + "]";
-            if (!details.Contains(message)) details.Add(message);
-        }
-        return string.Join("\nCaused by: ", details.ToArray());
+        return exception == null ? "No technical details were provided." : NetworkDiagnostics.Describe(exception);
     }
 
     private static string GetActiveSceneName()
@@ -1575,43 +1642,14 @@ internal sealed class CollaborationSession
 
     private static int FindFreePort()
     {
-        System.Net.Sockets.TcpListener probe = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
-        probe.Start();
-        int port = ((IPEndPoint)probe.LocalEndpoint).Port;
-        probe.Stop();
-        return port;
+        return CollaborationServer.FindFreePort();
     }
 
     private static Uri MakeWebSocketUri(string link)
     {
-        string value = link.Trim().TrimEnd('/');
-        if (value.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) value = "wss://" + value.Substring(8);
-        else if (value.StartsWith("http://", StringComparison.OrdinalIgnoreCase)) value = "ws://" + value.Substring(7);
-        else if (!value.StartsWith("ws://", StringComparison.OrdinalIgnoreCase) &&
-                 !value.StartsWith("wss://", StringComparison.OrdinalIgnoreCase)) value = "wss://" + value;
-        Uri uri = new Uri(value + "/collaboration/");
+        Uri uri = CollaborationClient.MakeWebSocketUri(link);
         if (string.Equals(uri.Host, "api.trycloudflare.com", StringComparison.OrdinalIgnoreCase))
             throw new FormatException("That is the server service API address, not a share link. Create a new server and copy the generated random link.");
         return uri;
-    }
-}
-
-internal sealed class CollaborationAssetSyncProcessor : AssetPostprocessor
-{
-    private static void OnPostprocessAllAssets(
-        string[] importedAssets,
-        string[] deletedAssets,
-        string[] movedAssets,
-        string[] movedFromAssetPaths)
-    {
-        CollaborationSession session = CollaborationTool.SharedSession;
-        if (!session.ShouldPublishAssetEvents) return;
-
-        for (int i = 0; i < movedAssets.Length; i++)
-            session.PublishMovedAsset(movedFromAssetPaths[i], movedAssets[i]);
-        foreach (string path in deletedAssets)
-            session.PublishDeletedAsset(path);
-        foreach (string path in importedAssets)
-            session.PublishImportedAsset(path);
     }
 }
