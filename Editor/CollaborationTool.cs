@@ -1418,7 +1418,8 @@ internal sealed class CollaborationSession
             if (args.Data.IndexOf("error", StringComparison.OrdinalIgnoreCase) >= 0 ||
                 args.Data.IndexOf("failed", StringComparison.OrdinalIgnoreCase) >= 0)
                 serverServiceDetail = SanitizeServiceMessage(args.Data);
-            Match match = Regex.Match(args.Data, @"https://[a-zA-Z0-9-]+\.trycloudflare\.com");
+            Match match = Regex.Match(args.Data, @"https://(?!api\.)[a-zA-Z0-9-]+\.trycloudflare\.com",
+                RegexOptions.IgnoreCase);
             if (match.Success)
                 mainThread.Enqueue(() =>
                 {
@@ -1549,7 +1550,10 @@ internal sealed class CollaborationSession
         else if (value.StartsWith("http://", StringComparison.OrdinalIgnoreCase)) value = "ws://" + value.Substring(7);
         else if (!value.StartsWith("ws://", StringComparison.OrdinalIgnoreCase) &&
                  !value.StartsWith("wss://", StringComparison.OrdinalIgnoreCase)) value = "wss://" + value;
-        return new Uri(value + "/collaboration/");
+        Uri uri = new Uri(value + "/collaboration/");
+        if (string.Equals(uri.Host, "api.trycloudflare.com", StringComparison.OrdinalIgnoreCase))
+            throw new FormatException("That is the server service API address, not a share link. Create a new server and copy the generated random link.");
+        return uri;
     }
 }
 
