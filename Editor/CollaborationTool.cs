@@ -62,6 +62,16 @@ public sealed class CollaborationTool : EditorWindow
     private void OnGUI()
     {
         EnsureStyles();
+        if (Session.Updating)
+        {
+            DrawBusyScreen("Updating to " + Session.UpdateHash + "…", "Downloading and installing the latest version.");
+            return;
+        }
+        if (!Session.IsHost && Session.Connecting)
+        {
+            DrawBusyScreen("Connecting to Server…", Session.Status);
+            return;
+        }
         if (Session.IsHost && (Session.Connecting || (Session.Connected && string.IsNullOrEmpty(Session.ShareLink))))
         {
             DrawCreatingServer();
@@ -133,6 +143,24 @@ public sealed class CollaborationTool : EditorWindow
                 GUILayout.FlexibleSpace();
             }
         }
+        GUILayout.FlexibleSpace();
+        Repaint();
+    }
+
+    private void DrawBusyScreen(string heading, string detail)
+    {
+        GUILayout.FlexibleSpace();
+        int frame = (int)(EditorApplication.timeSinceStartup * 10d) % 12;
+        GUIContent spinner = EditorGUIUtility.IconContent("WaitSpin" + frame.ToString("00"));
+        using (new EditorGUILayout.HorizontalScope())
+        {
+            GUILayout.FlexibleSpace();
+            GUILayout.Label(spinner, GUILayout.Width(32f), GUILayout.Height(32f));
+            GUILayout.FlexibleSpace();
+        }
+        GUILayout.Space(12f);
+        EditorGUILayout.LabelField(heading, centeredLabelStyle, GUILayout.Height(24f));
+        EditorGUILayout.LabelField(detail ?? "", centeredDetailStyle, GUILayout.Height(20f));
         GUILayout.FlexibleSpace();
         Repaint();
     }
@@ -400,6 +428,7 @@ internal sealed class CollaborationSession
     private double suppressAssetEventsUntil;
     private double nextUpdateCheck;
     private bool checkingForUpdate;
+    private bool updating;
 
     public event Action Changed;
     public bool IsHost { get; private set; }
@@ -410,6 +439,8 @@ internal sealed class CollaborationSession
     public string Status { get; private set; }
     public string Error { get; private set; }
     public string UpdateStatus { get; private set; }
+    public string UpdateHash { get; private set; }
+    public bool Updating => updating;
     public bool CheckingForUpdate => checkingForUpdate;
     public int PingMs { get; private set; } = -1;
     public long PacketsSent => Interlocked.Read(ref packetsSent);
@@ -1081,6 +1112,9 @@ internal sealed class CollaborationSession
                 return;
             }
 
+            UpdateHash = commit.sha.Substring(0, Math.Min(7, commit.sha.Length));
+            updating = true;
+            Changed?.Invoke();
             string source;
             using (WebClient web = CreateGitHubClient())
                 source = await web.DownloadStringTaskAsync(new Uri(string.Format(RawToolUrl, commit.sha)));
@@ -1090,6 +1124,7 @@ internal sealed class CollaborationSession
         }
         catch (Exception exception)
         {
+            updating = false;
             Debug.LogWarning("Collaboration: could not check GitHub for updates: " + exception.Message);
             QueueUpdateStatus("Update check failed");
         }
@@ -1116,14 +1151,17 @@ internal sealed class CollaborationSession
         return web;
     }
 
-    private static void InstallUpdate(string commitSha, string source)
+    private void InstallUpdate(string commitSha, string source)
     {
         try
         {
             string assetPath = FindToolAssetPath();
             if (string.IsNullOrEmpty(assetPath))
             {
+                updating = false;
+                UpdateHash = "";
                 Debug.LogWarning("Collaboration: an update is available, but the installed CollaborationTool.cs could not be located.");
+                Changed?.Invoke();
                 return;
             }
 
@@ -1139,11 +1177,16 @@ internal sealed class CollaborationSession
             }
 
             EditorPrefs.SetString(InstalledCommitKey, commitSha);
+            updating = false;
+            UpdateHash = "";
             AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceUpdate);
         }
         catch (Exception exception)
         {
+            updating = false;
+            UpdateHash = "";
             Debug.LogWarning("Collaboration: could not install the GitHub update: " + exception.Message);
+            Changed?.Invoke();
         }
     }
 
@@ -1202,7 +1245,10 @@ internal sealed class CollaborationSession
         ProcessStartInfo info = new ProcessStartInfo
         {
             FileName = "cloudflared",
-            Arguments = "tunnel --no-autoupdate --url http://127.0.0.1:" + port,
+            // HttpListener is registered specifically for 127.0.0.1. Override the
+            // forwarded public Host header so Windows routes the request to it.
+            Arguments = "tunnel --no-autoupdate --url http://127.0.0.1:" + port +
+                        " --http-host-header 127.0.0.1:" + port,
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardOutput = true,
