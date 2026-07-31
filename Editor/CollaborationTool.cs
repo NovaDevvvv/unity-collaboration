@@ -69,7 +69,7 @@ public sealed class CollaborationTool : EditorWindow
         }
         if (!Session.IsHost && Session.Connecting)
         {
-            DrawBusyScreen("Connecting to Server…", Session.Status);
+            DrawBusyScreen("Connecting to Server…", Session.ConnectionDetail);
             return;
         }
         if (Session.IsHost && (Session.Connecting || (Session.Connected && string.IsNullOrEmpty(Session.ShareLink))))
@@ -106,7 +106,11 @@ public sealed class CollaborationTool : EditorWindow
             normal = { textColor = EditorGUIUtility.isProSkin ? new Color(0.68f, 0.7f, 0.74f) : new Color(0.35f, 0.37f, 0.4f) }
         };
         centeredLabelStyle = new GUIStyle(EditorStyles.boldLabel) { alignment = TextAnchor.MiddleCenter, fontSize = 16 };
-        centeredDetailStyle = new GUIStyle(subtitleStyle) { alignment = TextAnchor.MiddleCenter };
+        centeredDetailStyle = new GUIStyle(subtitleStyle)
+        {
+            alignment = TextAnchor.MiddleCenter,
+            wordWrap = true
+        };
     }
 
     private void DrawCreatingServer()
@@ -122,7 +126,8 @@ public sealed class CollaborationTool : EditorWindow
         }
         GUILayout.Space(12f);
         EditorGUILayout.LabelField("Creating Server…", centeredLabelStyle, GUILayout.Height(24f));
-        EditorGUILayout.LabelField("Your share link will appear in a moment.", centeredDetailStyle, GUILayout.Height(20f));
+        EditorGUILayout.LabelField(string.IsNullOrEmpty(Session.ConnectionDetail) ? "Your share link will appear in a moment." : Session.ConnectionDetail,
+            centeredDetailStyle, GUILayout.Height(42f));
         if (!string.IsNullOrEmpty(Session.Error))
         {
             GUILayout.Space(14f);
@@ -160,7 +165,7 @@ public sealed class CollaborationTool : EditorWindow
         }
         GUILayout.Space(12f);
         EditorGUILayout.LabelField(heading, centeredLabelStyle, GUILayout.Height(24f));
-        EditorGUILayout.LabelField(detail ?? "", centeredDetailStyle, GUILayout.Height(20f));
+        EditorGUILayout.LabelField(detail ?? "", centeredDetailStyle, GUILayout.Height(42f));
         GUILayout.FlexibleSpace();
         Repaint();
     }
@@ -183,6 +188,7 @@ public sealed class CollaborationTool : EditorWindow
                 if (GUILayout.Button("Join Server", GUILayout.Height(34f))) page = Page.Join;
                 GUILayout.Space(8f);
             }
+            DrawError();
             GUILayout.FlexibleSpace();
             using (new EditorGUILayout.HorizontalScope())
             {
@@ -311,7 +317,15 @@ public sealed class CollaborationTool : EditorWindow
     private void DrawError()
     {
         if (!string.IsNullOrEmpty(Session.Error))
+        {
             EditorGUILayout.HelpBox(Session.Error, MessageType.Error);
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                if (GUILayout.Button("Copy Error Details", GUILayout.Width(130f)))
+                    EditorGUIUtility.systemCopyBuffer = Session.Error;
+                GUILayout.FlexibleSpace();
+            }
+        }
     }
 
     private static string FormatBytes(long bytes)
@@ -414,6 +428,7 @@ internal sealed class CollaborationSession
     private HttpListener listener;
     private ClientWebSocket client;
     private Process cloudflared;
+    private string serverServiceDetail;
     private string localName;
     private string lastLocalScene;
     private double lastCursorSend;
@@ -437,6 +452,7 @@ internal sealed class CollaborationSession
     public string LocalId { get; private set; }
     public string ShareLink { get; private set; }
     public string Status { get; private set; }
+    public string ConnectionDetail { get; private set; }
     public string Error { get; private set; }
     public string UpdateStatus { get; private set; }
     public string UpdateHash { get; private set; }
@@ -469,6 +485,7 @@ internal sealed class CollaborationSession
         Reset(name, true);
         Connecting = true;
         Status = "Creating server…";
+        ConnectionDetail = "Starting the local server…";
         Changed?.Invoke();
         try
         {
@@ -477,6 +494,7 @@ internal sealed class CollaborationSession
             listener = new HttpListener();
             listener.Prefixes.Add("http://127.0.0.1:" + port + "/");
             listener.Start();
+            ConnectionDetail = "Local server started. Creating a secure share link…";
             _ = AcceptLoop(cancellation.Token);
             AddOrUpdatePlayer(LocalId, localName, true).SceneName = GetActiveSceneName();
             Connected = true;
@@ -486,7 +504,7 @@ internal sealed class CollaborationSession
         }
         catch (Exception exception)
         {
-            Fail("Could not create the server: " + exception.Message);
+            Fail("Could not create the server.\n\n" + DescribeException(exception));
         }
         await Task.Yield();
     }
@@ -497,11 +515,13 @@ internal sealed class CollaborationSession
         Reset(name, false);
         Connecting = true;
         Status = "Connecting…";
+        ConnectionDetail = "Validating the server link…";
         Changed?.Invoke();
         try
         {
             cancellation = new CancellationTokenSource();
             Uri uri = MakeWebSocketUri(link);
+            ConnectionDetail = "Opening a secure WebSocket connection to " + uri.Host + "…";
             Exception lastError = null;
             for (int attempt = 1; attempt <= 6; attempt++)
             {
@@ -510,14 +530,19 @@ internal sealed class CollaborationSession
                     client?.Dispose();
                     client = new ClientWebSocket();
                     Status = attempt == 1 ? "Connecting…" : "Waiting for server… (" + attempt + "/6)";
+                    ConnectionDetail = "Attempt " + attempt + " of 6: contacting " + uri.Host + "…";
                     Changed?.Invoke();
                     await client.ConnectAsync(uri, cancellation.Token);
+                    ConnectionDetail = "WebSocket connected. Joining the collaboration session…";
+                    Changed?.Invoke();
                     lastError = null;
                     break;
                 }
                 catch (Exception exception) when (!(exception is OperationCanceledException))
                 {
                     lastError = exception;
+                    ConnectionDetail = "Attempt " + attempt + " failed: " + DescribeException(exception);
+                    Changed?.Invoke();
                     client?.Dispose();
                     client = null;
                     if (attempt < 6) await Task.Delay(1500, cancellation.Token);
@@ -537,7 +562,7 @@ internal sealed class CollaborationSession
         }
         catch (Exception exception)
         {
-            Fail("Could not join: " + exception.Message);
+            Fail("Could not join the server.\n\n" + DescribeException(exception));
         }
     }
 
@@ -609,6 +634,8 @@ internal sealed class CollaborationSession
         ShareLink = "";
         Status = "";
         Error = "";
+        ConnectionDetail = "";
+        serverServiceDetail = "";
         if (wasConnected) Changed?.Invoke();
     }
 
@@ -685,7 +712,7 @@ internal sealed class CollaborationSession
             }
             catch (Exception exception)
             {
-                if (!token.IsCancellationRequested) QueueError("Server listener stopped: " + exception.Message);
+                if (!token.IsCancellationRequested) QueueError("Server listener stopped.\n\n" + DescribeException(exception));
                 break;
             }
         }
@@ -732,7 +759,11 @@ internal sealed class CollaborationSession
             }
         }
         catch (Exception) when (token.IsCancellationRequested) { }
-        catch (Exception) { }
+        catch (Exception exception)
+        {
+            if (!token.IsCancellationRequested)
+                QueueError("A player connection closed unexpectedly.\n\n" + DescribeException(exception));
+        }
         finally
         {
             if (!string.IsNullOrEmpty(peer.Id) && peers.TryRemove(peer.Id, out _))
@@ -774,7 +805,7 @@ internal sealed class CollaborationSession
         }
         catch (Exception exception)
         {
-            if (!token.IsCancellationRequested) QueueError("Connection lost: " + exception.Message);
+            if (!token.IsCancellationRequested) QueueError("Connection lost.\n\n" + DescribeException(exception));
         }
     }
 
@@ -1258,12 +1289,16 @@ internal sealed class CollaborationSession
         DataReceivedEventHandler output = (_, args) =>
         {
             if (string.IsNullOrEmpty(args.Data)) return;
+            if (args.Data.IndexOf("error", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                args.Data.IndexOf("failed", StringComparison.OrdinalIgnoreCase) >= 0)
+                serverServiceDetail = SanitizeServiceMessage(args.Data);
             Match match = Regex.Match(args.Data, @"https://[a-zA-Z0-9-]+\.trycloudflare\.com");
             if (match.Success)
                 mainThread.Enqueue(() =>
                 {
                     ShareLink = match.Value;
                     Status = "Server is online";
+                    ConnectionDetail = "Server link created. Waiting for players…";
                     Changed?.Invoke();
                 });
         };
@@ -1272,7 +1307,10 @@ internal sealed class CollaborationSession
         cloudflared.Exited += (_, __) =>
         {
             if (Connected && string.IsNullOrEmpty(ShareLink))
-                QueueError("The server stopped before creating a share link.");
+            {
+                string detail = string.IsNullOrEmpty(serverServiceDetail) ? "No additional details were reported." : serverServiceDetail;
+                QueueError("The server stopped before creating a share link.\n\n" + detail);
+            }
         };
         try
         {
@@ -1282,9 +1320,17 @@ internal sealed class CollaborationSession
         }
         catch (Exception exception)
         {
-            Error = "The server link could not be created. Make sure the server service is installed and available, then try again. " + exception.Message;
+            Error = "The server link could not be created. Make sure the server service is installed and available, then try again.\n\n" + DescribeException(exception);
             Changed?.Invoke();
         }
+    }
+
+    private static string SanitizeServiceMessage(string message)
+    {
+        string value = message ?? "";
+        value = Regex.Replace(value, "cloudflared", "server service", RegexOptions.IgnoreCase);
+        value = Regex.Replace(value, "cloudflare", "server", RegexOptions.IgnoreCase);
+        return value.Length > 500 ? value.Substring(0, 500) : value;
     }
 
     private CollaborationPlayer AddOrUpdatePlayer(string id, string name, bool host)
@@ -1329,6 +1375,24 @@ internal sealed class CollaborationSession
     {
         value = string.IsNullOrWhiteSpace(value) ? "Player" : value.Trim();
         return value.Length > 32 ? value.Substring(0, 32) : value;
+    }
+
+    private static string DescribeException(Exception exception)
+    {
+        if (exception == null) return "No technical details were provided.";
+        List<string> details = new List<string>();
+        for (Exception current = exception; current != null && details.Count < 6; current = current.InnerException)
+        {
+            string message = string.IsNullOrWhiteSpace(current.Message) ? current.GetType().Name : current.Message.Trim();
+            WebException web = current as WebException;
+            if (web != null) message += " [Network status: " + web.Status + "]";
+            WebSocketException socket = current as WebSocketException;
+            if (socket != null) message += " [WebSocket error: " + socket.NativeErrorCode + "]";
+            System.Net.Sockets.SocketException tcp = current as System.Net.Sockets.SocketException;
+            if (tcp != null) message += " [Socket error: " + tcp.SocketErrorCode + "]";
+            if (!details.Contains(message)) details.Add(message);
+        }
+        return string.Join("\nCaused by: ", details.ToArray());
     }
 
     private static string GetActiveSceneName()
