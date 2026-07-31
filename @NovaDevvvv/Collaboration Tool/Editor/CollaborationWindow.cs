@@ -77,7 +77,7 @@ public sealed class CollaborationTool : EditorWindow
         }
         if (Session.Updating)
         {
-            DrawBusyScreen("Installing Update", "v" + Session.UpdateHash);
+            DrawBusyScreen("Downloading Update", "v" + Session.UpdateHash);
             return;
         }
         if (!Session.IsHost && Session.Connecting)
@@ -223,7 +223,7 @@ public sealed class CollaborationTool : EditorWindow
                 using (new EditorGUI.DisabledScope(Session.CheckingForUpdate))
                 {
                     string updateButton = Session.CheckingForUpdate ? "Checking…" :
-                        (Session.UpdateAvailable ? "Update to " + Session.UpdateHash : "↻  Check for Updates");
+                        (Session.UpdateAvailable ? "Download " + Session.UpdateHash : "↻  Check for Updates");
                     if (GUILayout.Button(updateButton, GUILayout.Width(145f), GUILayout.Height(25f)))
                     {
                         if (Session.UpdateAvailable) Session.InstallAvailableUpdate();
@@ -1180,7 +1180,7 @@ internal class CollaborationSessionImplementation
                 foreach (string fileName in ToolFiles)
                     sources[fileName] = await web.DownloadStringTaskAsync(
                         new Uri(string.Format(RawToolUrl, commit, fileName)));
-            mainThread.Enqueue(() => InstallUpdate(commit, sources));
+            mainThread.Enqueue(() => StageDownloadedUpdate(commit, sources));
         }
         catch (Exception exception)
         {
@@ -1272,50 +1272,41 @@ internal class CollaborationSessionImplementation
         return web;
     }
 
-    private void InstallUpdate(string commitSha, Dictionary<string, string> sources)
+    private void StageDownloadedUpdate(string commitSha, Dictionary<string, string> sources)
     {
         try
         {
-            string assetPath = FindToolAssetPath();
-            if (string.IsNullOrEmpty(assetPath))
-            {
-                updating = false;
-                Debug.LogWarning("Collaboration: an update is available, but the installed collaboration window script could not be located.");
-                Changed?.Invoke();
-                return;
-            }
-
             string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
-            string absolutePath = Path.GetFullPath(Path.Combine(projectRoot, assetPath));
-            string previousDirectory = Path.GetDirectoryName(absolutePath);
-            string installDirectory = Path.GetFullPath(Path.Combine(projectRoot, UpdateService.InstallDirectory));
-            Directory.CreateDirectory(installDirectory);
+            string shortHash = commitSha.Substring(0, Math.Min(7, commitSha.Length));
+            string stagingDirectory = Path.Combine(projectRoot, "Library", "NovaDevvvv",
+                "Collaboration Update", shortHash);
             foreach (KeyValuePair<string, string> source in sources)
             {
-                string destination = Path.Combine(installDirectory, source.Key);
+                string destination = Path.Combine(stagingDirectory, source.Key);
                 Directory.CreateDirectory(Path.GetDirectoryName(destination));
-                if (File.Exists(destination) && string.Equals(File.ReadAllText(destination), source.Value, StringComparison.Ordinal))
-                    continue;
-                string temporaryPath = destination + ".update";
-                File.WriteAllText(temporaryPath, source.Value, new UTF8Encoding(false));
-                File.Copy(temporaryPath, destination, true);
-                File.Delete(temporaryPath);
+                File.WriteAllText(destination, source.Value, new UTF8Encoding(false));
             }
-            string desiredEditorDirectory = Path.Combine(installDirectory, "Editor");
-            if (!string.Equals(previousDirectory, desiredEditorDirectory, StringComparison.OrdinalIgnoreCase))
-                Debug.LogWarning("Previous collaboration scripts were left untouched for safety. Remove them manually after Unity restarts.");
-            Debug.Log("Collaboration updated from GitHub to commit " + commitSha.Substring(0, 7) + ".");
-
-            EditorPrefs.SetString(InstalledCommitKey, commitSha);
-            availableUpdateCommit = "";
+            File.WriteAllText(Path.Combine(stagingDirectory, "INSTALL AFTER CLOSING UNITY.txt"),
+                "Unity was not modified while it was running.\r\n\r\n" +
+                "Close Unity, then copy the Editor folder from this download into:\r\n" +
+                Path.Combine(projectRoot, UpdateService.InstallDirectory) + "\r\n\r\n" +
+                "Replace only the collaboration tool files. Keep this staged folder as a backup until the project opens successfully.",
+                new UTF8Encoding(false));
             updating = false;
-            UpdateHash = "";
-            AssetDatabase.Refresh(ImportAssetOptions.ForceUpdate);
+            UpdateStatus = "Downloaded " + shortHash + " safely";
+            Debug.Log("Collaboration update " + shortHash + " downloaded safely to " + stagingDirectory +
+                      ". Unity project files were not changed.");
+            bool reveal = EditorUtility.DisplayDialog("Collaboration Update Downloaded",
+                "The update was downloaded outside Assets. Unity was not refreshed or recompiled.\n\n" +
+                "Close Unity before copying the staged Editor folder into the Collaboration Tool folder.",
+                "Show Downloaded Files", "Close");
+            if (reveal) EditorUtility.RevealInFinder(stagingDirectory);
+            Changed?.Invoke();
         }
         catch (Exception exception)
         {
             updating = false;
-            Debug.LogWarning("Collaboration: could not install the GitHub update: " + exception.Message);
+            Error = "The update could not be staged safely. No project files were changed.\n\n" + DescribeException(exception);
             Changed?.Invoke();
         }
     }
