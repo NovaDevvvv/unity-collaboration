@@ -1358,11 +1358,21 @@ internal class CollaborationSessionImplementation
 
     private static string FindToolAssetPath()
     {
-        foreach (string guid in AssetDatabase.FindAssets("CollaborationTool t:MonoScript"))
+        string expectedPath = UpdateService.InstallDirectory + "/Editor/CollaborationWindow.cs";
+        if (AssetDatabase.LoadAssetAtPath<MonoScript>(expectedPath) != null)
+            return expectedPath;
+
+        string[] searches = { "CollaborationWindow t:MonoScript", "CollaborationTool t:MonoScript" };
+        foreach (string search in searches)
         {
-            string path = AssetDatabase.GUIDToAssetPath(guid);
-            MonoScript script = AssetDatabase.LoadAssetAtPath<MonoScript>(path);
-            if (script != null && script.GetClass() == typeof(CollaborationTool)) return path;
+            foreach (string guid in AssetDatabase.FindAssets(search))
+            {
+                string path = AssetDatabase.GUIDToAssetPath(guid);
+                string fileName = Path.GetFileName(path);
+                if (fileName.Equals("CollaborationWindow.cs", StringComparison.OrdinalIgnoreCase) ||
+                    fileName.Equals("CollaborationTool.cs", StringComparison.OrdinalIgnoreCase))
+                    return path;
+            }
         }
         return null;
     }
