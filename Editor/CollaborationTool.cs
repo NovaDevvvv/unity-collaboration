@@ -18,7 +18,7 @@ using Debug = UnityEngine.Debug;
 
 public sealed class CollaborationTool : EditorWindow
 {
-    private enum Page { Home, Join, Create, Session }
+    private enum Page { Home, Join, Create, Session, Settings }
 
     private static readonly CollaborationSession Session = new CollaborationSession();
     internal static CollaborationSession SharedSession => Session;
@@ -26,6 +26,7 @@ public sealed class CollaborationTool : EditorWindow
     private string playerName = "";
     private string serverLink = "";
     private string chatText = "";
+    private string githubPatInput = "";
     private Vector2 chatScroll;
     private Vector2 playersScroll;
     private GUIStyle titleStyle;
@@ -62,9 +63,14 @@ public sealed class CollaborationTool : EditorWindow
     private void OnGUI()
     {
         EnsureStyles();
+        if (Session.ShowingUpdateCheck)
+        {
+            DrawBusyScreen("Checking For Updates…", "Looking for a newer version.");
+            return;
+        }
         if (Session.Updating)
         {
-            DrawBusyScreen("Updating to " + Session.UpdateHash + "…", "Downloading and installing the latest version.");
+            DrawBusyScreen("Installing Update", "v" + Session.UpdateHash);
             return;
         }
         if (!Session.IsHost && Session.Connecting)
@@ -194,11 +200,27 @@ public sealed class CollaborationTool : EditorWindow
             {
                 using (new EditorGUI.DisabledScope(Session.CheckingForUpdate))
                 {
-                    if (GUILayout.Button(Session.CheckingForUpdate ? "Checking…" : "↻  Check for Updates", GUILayout.Width(145f), GUILayout.Height(25f)))
-                        Session.CheckForUpdatesNow();
+                    string updateButton = Session.CheckingForUpdate ? "Checking…" :
+                        (Session.UpdateAvailable ? "Update to " + Session.UpdateHash : "↻  Check for Updates");
+                    if (GUILayout.Button(updateButton, GUILayout.Width(145f), GUILayout.Height(25f)))
+                    {
+                        if (Session.UpdateAvailable) Session.InstallAvailableUpdate();
+                        else Session.CheckForUpdatesNow();
+                    }
                 }
                 GUILayout.FlexibleSpace();
+                if (GUILayout.Button("Settings", GUILayout.Width(80f), GUILayout.Height(25f)))
+                {
+                    githubPatInput = Session.GitHubPat;
+                    page = Page.Settings;
+                }
             }
+            return;
+        }
+
+        if (page == Page.Settings)
+        {
+            DrawSettings();
             return;
         }
 
@@ -232,6 +254,40 @@ public sealed class CollaborationTool : EditorWindow
             GUILayout.Space(4f);
         }
         DrawError();
+    }
+
+    private void DrawSettings()
+    {
+        using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+        {
+            GUILayout.Space(6f);
+            EditorGUILayout.LabelField("Settings", EditorStyles.boldLabel);
+            GUILayout.Space(8f);
+            EditorGUILayout.LabelField("GitHub personal access token", EditorStyles.miniBoldLabel);
+            githubPatInput = EditorGUILayout.PasswordField(githubPatInput ?? "");
+            EditorGUILayout.LabelField(
+                "Optional. Used to authorize update checks and avoid anonymous API limits. A fine-grained, read-only token is sufficient.",
+                EditorStyles.wordWrappedMiniLabel);
+            EditorGUILayout.HelpBox("The token is stored locally in Unity EditorPrefs and is not encrypted.", MessageType.Warning);
+            EditorGUILayout.LabelField(Session.HasGitHubPat ? "Authorized requests enabled" : "Using anonymous requests",
+                EditorStyles.miniLabel);
+            GUILayout.Space(6f);
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                if (GUILayout.Button("Save", GUILayout.Height(28f)))
+                    Session.SetGitHubPat(githubPatInput);
+                using (new EditorGUI.DisabledScope(!Session.HasGitHubPat))
+                {
+                    if (GUILayout.Button("Remove", GUILayout.Width(80f), GUILayout.Height(28f)))
+                    {
+                        githubPatInput = "";
+                        Session.SetGitHubPat("");
+                    }
+                }
+            }
+            if (GUILayout.Button("Back", GUILayout.Height(24f))) page = Page.Home;
+            GUILayout.Space(4f);
+        }
     }
 
     private void DrawSession()
@@ -405,7 +461,8 @@ internal sealed class CollaborationSession
     private const string LatestCommitUrl = "https://api.github.com/repos/novadevvvv/unity-collaboration/commits/main";
     private const string RawToolUrl = "https://raw.githubusercontent.com/novadevvvv/unity-collaboration/{0}/Editor/CollaborationTool.cs";
     private const string InstalledCommitKey = "NovaDev.UnityCollaboration.InstalledCommit";
-    private const double UpdateCheckInterval = 60d;
+    private const string GitHubPatKey = "NovaDev.UnityCollaboration.GitHubPat";
+    private const double UpdateCheckInterval = 300d;
     private const long MaxSyncedFileBytes = 8L * 1024L * 1024L;
     private const int MaxMessageBytes = 12 * 1024 * 1024;
 
@@ -443,7 +500,10 @@ internal sealed class CollaborationSession
     private double suppressAssetEventsUntil;
     private double nextUpdateCheck;
     private bool checkingForUpdate;
+    private bool showingUpdateCheck;
     private bool updating;
+    private string githubPat;
+    private string availableUpdateCommit;
 
     public event Action Changed;
     public bool IsHost { get; private set; }
@@ -458,6 +518,10 @@ internal sealed class CollaborationSession
     public string UpdateHash { get; private set; }
     public bool Updating => updating;
     public bool CheckingForUpdate => checkingForUpdate;
+    public bool ShowingUpdateCheck => showingUpdateCheck;
+    public bool UpdateAvailable => !string.IsNullOrEmpty(availableUpdateCommit);
+    public string GitHubPat => githubPat ?? "";
+    public bool HasGitHubPat => !string.IsNullOrEmpty(githubPat);
     public int PingMs { get; private set; } = -1;
     public long PacketsSent => Interlocked.Read(ref packetsSent);
     public long PacketsReceived => Interlocked.Read(ref packetsReceived);
@@ -470,6 +534,7 @@ internal sealed class CollaborationSession
 
     public CollaborationSession()
     {
+        githubPat = EditorPrefs.GetString(GitHubPatKey, "");
         EditorApplication.update += Update;
         AssemblyReloadEvents.beforeAssemblyReload += Close;
         EditorApplication.quitting += Close;
@@ -477,6 +542,15 @@ internal sealed class CollaborationSession
         EditorApplication.hierarchyChanged += ScheduleProjectSave;
         ObjectChangeEvents.changesPublished += OnObjectChanges;
         EditorApplication.delayCall += () => CheckForUpdate();
+    }
+
+    public void SetGitHubPat(string value)
+    {
+        githubPat = (value ?? "").Trim();
+        if (string.IsNullOrEmpty(githubPat)) EditorPrefs.DeleteKey(GitHubPatKey);
+        else EditorPrefs.SetString(GitHubPatKey, githubPat);
+        UpdateStatus = string.IsNullOrEmpty(githubPat) ? "GitHub authorization removed" : "GitHub authorization saved";
+        Changed?.Invoke();
     }
 
     public async void Create(string name)
@@ -1111,13 +1185,36 @@ internal sealed class CollaborationSession
         CheckForUpdate(true);
     }
 
+    public async void InstallAvailableUpdate()
+    {
+        if (updating || string.IsNullOrEmpty(availableUpdateCommit)) return;
+        string commit = availableUpdateCommit;
+        updating = true;
+        Changed?.Invoke();
+        try
+        {
+            string source;
+            using (WebClient web = CreateGitHubClient())
+                source = await web.DownloadStringTaskAsync(new Uri(string.Format(RawToolUrl, commit)));
+            mainThread.Enqueue(() => InstallUpdate(commit, source));
+        }
+        catch (Exception exception)
+        {
+            updating = false;
+            Error = "The update could not be downloaded.\n\n" + DescribeException(exception);
+            Changed?.Invoke();
+        }
+    }
+
     private async void CheckForUpdate(bool showStatus = false)
     {
         if (checkingForUpdate || EditorApplication.timeSinceStartup < nextUpdateCheck) return;
         checkingForUpdate = true;
+        DateTime checkStarted = DateTime.UtcNow;
         nextUpdateCheck = EditorApplication.timeSinceStartup + UpdateCheckInterval;
         if (showStatus)
         {
+            showingUpdateCheck = true;
             UpdateStatus = "Checking GitHub…";
             Changed?.Invoke();
         }
@@ -1134,24 +1231,22 @@ internal sealed class CollaborationSession
             if (string.IsNullOrEmpty(installedCommit))
             {
                 EditorPrefs.SetString(InstalledCommitKey, commit.sha);
+                availableUpdateCommit = "";
+                UpdateHash = "";
                 QueueUpdateStatus("You’re up to date");
                 return;
             }
             if (string.Equals(installedCommit, commit.sha, StringComparison.OrdinalIgnoreCase))
             {
+                availableUpdateCommit = "";
+                UpdateHash = "";
                 QueueUpdateStatus("You’re up to date");
                 return;
             }
 
+            availableUpdateCommit = commit.sha;
             UpdateHash = commit.sha.Substring(0, Math.Min(7, commit.sha.Length));
-            updating = true;
-            Changed?.Invoke();
-            string source;
-            using (WebClient web = CreateGitHubClient())
-                source = await web.DownloadStringTaskAsync(new Uri(string.Format(RawToolUrl, commit.sha)));
-
-            QueueUpdateStatus("Installing update…");
-            mainThread.Enqueue(() => InstallUpdate(commit.sha, source));
+            QueueUpdateStatus("Update available: " + UpdateHash);
         }
         catch (Exception exception)
         {
@@ -1161,7 +1256,16 @@ internal sealed class CollaborationSession
         }
         finally
         {
-            checkingForUpdate = false;
+            if (showStatus)
+            {
+                TimeSpan remaining = TimeSpan.FromSeconds(2d) - (DateTime.UtcNow - checkStarted);
+                if (remaining > TimeSpan.Zero)
+                    await Task.Delay(remaining);
+                showingUpdateCheck = false;
+                checkingForUpdate = false;
+                Changed?.Invoke();
+            }
+            else checkingForUpdate = false;
         }
     }
 
@@ -1174,11 +1278,13 @@ internal sealed class CollaborationSession
         });
     }
 
-    private static WebClient CreateGitHubClient()
+    private WebClient CreateGitHubClient()
     {
         WebClient web = new WebClient();
         web.Headers[HttpRequestHeader.UserAgent] = "Unity-Collaboration-Tool";
         web.Headers[HttpRequestHeader.Accept] = "application/vnd.github+json";
+        if (!string.IsNullOrEmpty(githubPat))
+            web.Headers[HttpRequestHeader.Authorization] = "Bearer " + githubPat;
         return web;
     }
 
@@ -1190,7 +1296,6 @@ internal sealed class CollaborationSession
             if (string.IsNullOrEmpty(assetPath))
             {
                 updating = false;
-                UpdateHash = "";
                 Debug.LogWarning("Collaboration: an update is available, but the installed CollaborationTool.cs could not be located.");
                 Changed?.Invoke();
                 return;
@@ -1208,6 +1313,7 @@ internal sealed class CollaborationSession
             }
 
             EditorPrefs.SetString(InstalledCommitKey, commitSha);
+            availableUpdateCommit = "";
             updating = false;
             UpdateHash = "";
             AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceUpdate);
@@ -1215,7 +1321,6 @@ internal sealed class CollaborationSession
         catch (Exception exception)
         {
             updating = false;
-            UpdateHash = "";
             Debug.LogWarning("Collaboration: could not install the GitHub update: " + exception.Message);
             Changed?.Invoke();
         }
