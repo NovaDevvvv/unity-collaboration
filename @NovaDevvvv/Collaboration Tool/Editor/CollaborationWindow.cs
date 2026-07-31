@@ -551,6 +551,7 @@ internal class CollaborationSessionImplementation
     private string serverServiceDetail;
     private int serverLinkAttempt;
     private bool validatingServerLink;
+    private bool backupLinkAttempted;
     private string localName;
     private string lastLocalScene;
     private double lastPresenceSend;
@@ -667,7 +668,7 @@ internal class CollaborationSessionImplementation
             Connected = true;
             Connecting = false;
             Status = "Creating server link…";
-            StartCloudflared(port);
+            StartBackupTunnel(port, cancellation.Token);
         }
         catch (Exception exception)
         {
@@ -828,6 +829,7 @@ internal class CollaborationSessionImplementation
         serverServiceDetail = "";
         serverLinkAttempt = 0;
         validatingServerLink = false;
+        backupLinkAttempted = false;
         if (wasConnected) Changed?.Invoke();
     }
 
@@ -1752,7 +1754,7 @@ internal class CollaborationSessionImplementation
             {
                 if (serverLinkAttempt < 3)
                     _ = RetryServerLink(port, process, sessionToken);
-                else
+                else if (!backupLinkAttempted)
                 {
                     mainThread.Enqueue(() =>
                     {
@@ -1761,6 +1763,14 @@ internal class CollaborationSessionImplementation
                         StartBackupTunnel(port, sessionToken);
                     });
                 }
+                else mainThread.Enqueue(() =>
+                {
+                    try { process.Dispose(); } catch { }
+                    if (sessionToken.IsCancellationRequested || !Connected || !string.IsNullOrEmpty(ShareLink)) return;
+                    Error = "A public server link could not be created after trying both available server services.";
+                    ConnectionDetail = "Server link creation failed.";
+                    Changed?.Invoke();
+                });
             }
         };
         try
@@ -1845,7 +1855,8 @@ internal class CollaborationSessionImplementation
 
     private void StartBackupTunnel(int port, CancellationToken token)
     {
-        ConnectionDetail = "Primary link service unavailable. Trying backup serverâ€¦";
+        backupLinkAttempted = true;
+        ConnectionDetail = "Creating server link...";
         Changed?.Invoke();
         int proxyPort = FindFreePort();
         ProcessStartInfo info = new ProcessStartInfo
@@ -1885,12 +1896,15 @@ internal class CollaborationSessionImplementation
         process.Exited += (_, __) => mainThread.Enqueue(() =>
         {
             if (token.IsCancellationRequested || !Connected || !string.IsNullOrEmpty(ShareLink) || backupTunnel != process) return;
-            string detail = string.IsNullOrEmpty(serverServiceDetail)
-                ? "The backup server closed before returning a public link."
-                : serverServiceDetail;
-            Error = "A public server link could not be created. The local server is still running.\n\n" + detail;
-            ConnectionDetail = "Server link creation failed.";
+            try { backupProxy?.Dispose(); } catch { }
+            backupProxy = null;
+            try { process.Dispose(); } catch { }
+            backupTunnel = null;
+            serverServiceDetail = "";
+            serverLinkAttempt = 0;
+            ConnectionDetail = "Trying another server service...";
             Changed?.Invoke();
+            StartCloudflared(port);
         });
         try
         {
@@ -1905,9 +1919,10 @@ internal class CollaborationSessionImplementation
         {
             try { backupProxy?.Dispose(); } catch { }
             backupProxy = null;
-            Error = "The backup server could not be started. Make sure Windows OpenSSH Client is installed.\n\n" + DescribeException(exception);
-            ConnectionDetail = "Server link creation failed.";
+            serverServiceDetail = SanitizeServiceMessage(DescribeException(exception));
+            ConnectionDetail = "Trying another server service...";
             Changed?.Invoke();
+            StartCloudflared(port);
         }
     }
 
