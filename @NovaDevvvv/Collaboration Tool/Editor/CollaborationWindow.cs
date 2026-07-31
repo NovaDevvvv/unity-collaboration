@@ -12,6 +12,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEditor;
+using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using Debug = UnityEngine.Debug;
@@ -150,16 +151,18 @@ public sealed class CollaborationTool : EditorWindow
                 EditorGUILayout.HelpBox(Session.Error, MessageType.Error);
                 GUILayout.Space(24f);
             }
-            using (new EditorGUILayout.HorizontalScope())
+        }
+        GUILayout.Space(8f);
+        using (new EditorGUILayout.HorizontalScope())
+        {
+            GUILayout.FlexibleSpace();
+            if (GUILayout.Button("Cancel", GUILayout.Width(120f), GUILayout.Height(30f)))
             {
-                GUILayout.FlexibleSpace();
-                if (GUILayout.Button("Cancel", GUILayout.Width(110f), GUILayout.Height(28f)))
-                {
-                    Session.Close();
-                    page = Page.Home;
-                }
-                GUILayout.FlexibleSpace();
+                Session.Close();
+                page = Page.Home;
+                GUIUtility.ExitGUI();
             }
+            GUILayout.FlexibleSpace();
         }
         GUILayout.FlexibleSpace();
         Repaint();
@@ -268,7 +271,7 @@ public sealed class CollaborationTool : EditorWindow
                     page = Page.Session;
                 }
             }
-            if (GUILayout.Button("Back", GUILayout.Height(24f)))
+            if (GUILayout.Button(page == Page.Create ? "Cancel" : "Back", GUILayout.Height(24f)))
             {
                 Session.Close();
                 page = Page.Home;
@@ -387,8 +390,7 @@ public sealed class CollaborationTool : EditorWindow
         string button = Session.IsHost ? "Close Server" : "Leave Server";
         if (GUILayout.Button(button, GUILayout.Height(26f)))
         {
-            Session.Close();
-            page = Page.Home;
+            if (Session.LeaveAndOpenEmptyScene()) page = Page.Home;
         }
     }
 
@@ -767,6 +769,14 @@ internal class CollaborationSessionImplementation
         if (wasConnected) Changed?.Invoke();
     }
 
+    public bool LeaveAndOpenEmptyScene()
+    {
+        if (!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()) return false;
+        Close();
+        EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+        return true;
+    }
+
     private void Reset(string name, bool host)
     {
         localName = name;
@@ -943,7 +953,14 @@ internal class CollaborationSessionImplementation
                 else if (message.type == "kicked")
                 {
                     string reason = message.text;
-                    mainThread.Enqueue(() => { Close(); Error = reason; Changed?.Invoke(); });
+                    mainThread.Enqueue(() =>
+                    {
+                        if (LeaveAndOpenEmptyScene())
+                        {
+                            Error = reason;
+                            Changed?.Invoke();
+                        }
+                    });
                     return;
                 }
                 else HandleIncoming(message);
