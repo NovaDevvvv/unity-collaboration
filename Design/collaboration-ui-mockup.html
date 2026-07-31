@@ -3,7 +3,6 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Collaboration Tool UI Mockup</title>
   <style>
     :root {
       --bg: #17191d; --panel: #22252b; --panel-2: #292d34; --line: #383d46;
@@ -14,49 +13,58 @@
     body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #101216;
       color: var(--text); font: 13px Inter, system-ui, sans-serif; }
     .window { width: 430px; height: 610px; display: flex; flex-direction: column; gap: var(--space);
-      padding: 18px; background: var(--bg); border: 1px solid #30343b; border-radius: 12px;
+      padding: 18px; background: var(--bg); border-radius: 12px;
       box-shadow: 0 18px 55px #0009; }
-    h1 { margin: 0; font-size: 21px; letter-spacing: -.3px; }
+    h1 { margin: 0; font-size: 21px; letter-spacing: -.3px; margin-bottom: 5px; }
     .subtitle, .meta { color: var(--muted); }
-    .card { padding: var(--space); background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+    .card { padding: var(--space); background: var(--panel); width: 100%; border-radius: var(--radius); }
     .invite { display: flex; gap: 8px; margin-top: 10px; }
-    input { min-width: 0; flex: 1; color: var(--text); background: #15171b; border: 1px solid var(--line);
+    input { min-width: 0; flex: 1; color: var(--text); background: #15171b; border: 0px solid var(--line);
       border-radius: 7px; padding: 9px 10px; }
-    button { color: var(--text); background: var(--panel-2); border: 1px solid #424854; border-radius: 7px;
+    button { color: var(--text); background: var(--panel-2); border: 0px solid #424854; border-radius: 7px;
       padding: 8px 13px; cursor: pointer; }
     button:hover { border-color: var(--accent); }
     .tabs { display: grid; grid-template-columns: 1fr 1fr; padding: 3px; background: #111318; border-radius: 9px; }
     .tab { border: 0; background: transparent; color: var(--muted); }
-    .tab.active { color: var(--text); background: var(--panel-2); box-shadow: 0 1px 4px #0007; }
+    .tab.active { color: var(--text); background: var(--panel-2);  }
     .content { flex: 1; min-height: 0; overflow: auto; }
     .player { display: grid; grid-template-columns: 12px 1fr auto auto; gap: 10px; align-items: center;
-      padding: 11px; border-bottom: 1px solid var(--line); }
-    .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--player); box-shadow: 0 0 8px var(--player); }
+      padding: 11px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--player); }
     .ping { color: #aeb6c3; font-variant-numeric: tabular-nums; }
     .kick { padding: 5px 9px; font-size: 11px; }
     .chat { height: 100%; display: none; flex-direction: column; gap: 10px; }
-    .messages { flex: 1; padding: 12px; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+    .messages { flex: 1; padding: 12px; overflow: auto; background: var(--panel); border-radius: var(--radius); }
     .composer { display: flex; gap: 8px; }
     .status { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; }
-    .leave { margin-top: auto; width: 100%; color: #ffd9dc; border-color: #763b43; background: #3a2227; }
+    .leave { margin-top: auto; width: 100%; color: #ffd9dc; background: #3a2227; }
+    .message-other { align-items: right; }
   </style>
 </head>
 <body>
   <main class="window">
-    <header><h1>Collaboration</h1><div class="subtitle">Work together in real time</div></header>
-    <section class="card"><strong>Invite others</strong><div class="meta">Share this server link with collaborators.</div>
-      <div class="invite"><input value="https://example.lhr.life" readonly><button>Copy</button></div></section>
     <nav class="tabs"><button class="tab active" data-page="players">Players</button><button class="tab" data-page="chat">Chat</button></nav>
+    <header><h1>Collaboration</h1><div class="subtitle">Realtime Editing</div></header>
+
     <section class="content">
       <div id="players">
-        <div class="player" style="--player:#769cff"><i class="dot"></i><span>Nova <small class="meta">(Host) · Main</small></span><span class="ping">0 ms</span><span></span></div>
-        <div class="player" style="--player:#ef8fc5"><i class="dot"></i><span>Player Two <small class="meta">· Main</small></span><span class="ping">42 ms</span><button class="kick">Kick</button></div>
+        <section class="card"><strong>Invite others</strong><div class="meta">Share this server link with collaborators.</div>
+          <div class="invite"><input value="https://example.lhr.life" readonly type="password"><button>Copy</button></div></section>
+
+        <hr style="width: 95%; color: rgba(255, 254, 254, 0.041); margin-top: 20px; margin-bottom: 20px;">
+
+        <div class="player" style="--player:#769cff"><i class="dot"></i><span>Nova <small class="meta"> · Scene 1</small></span><span class="ping">0 ms</span><span></span></div>
+        <div class="player" style="--player:#ef8fc5"><i class="dot"></i><span>Player Two <small class="meta">· Scene 2</small></span><span class="ping">42 ms</span><button class="kick">Kick</button></div>
       </div>
-      <div id="chat" class="chat"><div class="messages"><div><b>Nova</b> <span class="meta">Welcome!</span></div></div>
+      <div id="chat" class="chat"><div class="messages" style="gap: 5px;">
+        <div>
+          <div style="message-you"> <b>You</b> <span class="meta">Welcome!</span> </div> <br>
+          <div style="message-other"> <b>Nova</b> <span class="meta">Hello!</span> </div> <br>
+        </div>
         <div class="composer"><input placeholder="Write a message…"><button>Send</button></div></div>
     </section>
-    <div class="status"><span>Ping 21 ms</span><span>18 packets sent · 16 received</span></div>
     <button class="leave">Close Server</button>
+    <div class="status"><span>Ping 21 ms</span><span>18 packets sent · 16 received</span></div>
   </main>
   <script>
     document.querySelectorAll('.tab').forEach(tab => tab.onclick = () => {

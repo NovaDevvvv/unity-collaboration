@@ -103,13 +103,15 @@ public sealed class CollaborationTool : EditorWindow
             GUILayout.Space(6f);
             using (new EditorGUILayout.VerticalScope())
             {
-                EditorGUILayout.LabelField("Collaboration", titleStyle);
-                EditorGUILayout.LabelField(Session.Connected ? "Work together in real time" : "Create together, wherever you are", subtitleStyle);
-                EditorGUILayout.Space(12f);
                 if (Session.Connected || Session.Connecting)
                     DrawSession();
                 else
+                {
+                    EditorGUILayout.LabelField("Collaboration", titleStyle);
+                    EditorGUILayout.LabelField("Create together, wherever you are", subtitleStyle);
+                    EditorGUILayout.Space(12f);
                     DrawSetup();
+                }
             }
             GUILayout.Space(6f);
         }
@@ -322,34 +324,40 @@ public sealed class CollaborationTool : EditorWindow
 
     private void DrawSession()
     {
+        sessionTab = GUILayout.Toolbar(sessionTab, new[] { "Players", "Chat" }, GUILayout.Height(28f));
+        EditorGUILayout.Space(10f);
+        EditorGUILayout.LabelField("Collaboration", titleStyle);
+        EditorGUILayout.LabelField("Realtime Editing", subtitleStyle);
+        EditorGUILayout.Space(12f);
+
         if (Session.Connecting)
         {
             EditorGUILayout.HelpBox(Session.Status, MessageType.Info);
             GUILayout.Space(6f);
         }
-
-        if (Session.IsHost && !string.IsNullOrEmpty(Session.ShareLink))
-        {
-            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
-            {
-                EditorGUILayout.LabelField("Invite others", EditorStyles.boldLabel);
-                EditorGUILayout.LabelField("Share this server link with your collaborators.", EditorStyles.wordWrappedMiniLabel);
-                GUILayout.Space(5f);
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    EditorGUILayout.SelectableLabel(Session.ShareLink, EditorStyles.textField, GUILayout.Height(EditorGUIUtility.singleLineHeight));
-                    if (GUILayout.Button("Copy", GUILayout.Width(58f)))
-                        EditorGUIUtility.systemCopyBuffer = Session.ShareLink;
-                }
-            }
-        }
-
-        EditorGUILayout.Space(8f);
-        sessionTab = GUILayout.Toolbar(sessionTab, new[] { "Players", "Chat" }, GUILayout.Height(28f));
-        EditorGUILayout.Space(6f);
         if (sessionTab == 0)
         {
-            playersScroll = EditorGUILayout.BeginScrollView(playersScroll, EditorStyles.helpBox, GUILayout.ExpandHeight(true));
+            if (Session.IsHost && !string.IsNullOrEmpty(Session.ShareLink))
+            {
+                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+                {
+                    EditorGUILayout.LabelField("Invite others", EditorStyles.boldLabel);
+                    EditorGUILayout.LabelField("Share this server link with collaborators.", EditorStyles.wordWrappedMiniLabel);
+                    GUILayout.Space(6f);
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        EditorGUILayout.PasswordField(Session.ShareLink);
+                        if (GUILayout.Button("Copy", GUILayout.Width(58f)))
+                            EditorGUIUtility.systemCopyBuffer = Session.ShareLink;
+                    }
+                }
+                EditorGUILayout.Space(12f);
+                Rect divider = GUILayoutUtility.GetRect(1f, 1f, GUILayout.ExpandWidth(true));
+                EditorGUI.DrawRect(new Rect(divider.x + 10f, divider.y, Mathf.Max(0f, divider.width - 20f), 1f),
+                    EditorGUIUtility.isProSkin ? new Color(1f, 1f, 1f, 0.07f) : new Color(0f, 0f, 0f, 0.1f));
+                EditorGUILayout.Space(12f);
+            }
+            playersScroll = EditorGUILayout.BeginScrollView(playersScroll, GUILayout.ExpandHeight(true));
             foreach (CollaborationPlayer player in Session.Players.ToArray())
             {
                 using (new EditorGUILayout.HorizontalScope())
@@ -357,7 +365,7 @@ public sealed class CollaborationTool : EditorWindow
                     Rect swatch = GUILayoutUtility.GetRect(10f, 10f, GUILayout.Width(10f), GUILayout.Height(18f));
                     EditorGUI.DrawRect(new Rect(swatch.x, swatch.y + 4f, 10f, 10f), player.Color);
                     string scene = string.IsNullOrEmpty(player.SceneName) ? "Unknown scene" : player.SceneName;
-                    GUILayout.Label(player.Name + (player.IsHost ? " (Host)" : "") + "  •  " + scene, GUILayout.ExpandWidth(true));
+                    GUILayout.Label(player.Name + "  •  " + scene, GUILayout.ExpandWidth(true));
                     GUILayout.Label(player.PingMs < 0 ? "— ms" : player.PingMs + " ms", EditorStyles.miniLabel, GUILayout.Width(52f));
                     if (Session.IsHost && !player.IsHost && GUILayout.Button("Kick", GUILayout.Width(48f)))
                         Session.Kick(player.Id);
@@ -370,7 +378,17 @@ public sealed class CollaborationTool : EditorWindow
         {
             chatScroll = EditorGUILayout.BeginScrollView(chatScroll, EditorStyles.helpBox, GUILayout.ExpandHeight(true));
             foreach (string line in Session.Chat.ToArray())
-                EditorGUILayout.LabelField(line, EditorStyles.wordWrappedLabel);
+            {
+                bool own = Session.IsLocalChatLine(line);
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    if (own) GUILayout.FlexibleSpace();
+                    EditorGUILayout.LabelField(Session.FormatChatLine(line), EditorStyles.wordWrappedLabel,
+                        GUILayout.MaxWidth(position.width * 0.76f));
+                    if (!own) GUILayout.FlexibleSpace();
+                }
+                GUILayout.Space(3f);
+            }
             EditorGUILayout.EndScrollView();
             using (new EditorGUILayout.HorizontalScope())
             {
@@ -388,16 +406,6 @@ public sealed class CollaborationTool : EditorWindow
             }
         }
 
-        EditorGUILayout.Space(5f);
-        using (new EditorGUILayout.HorizontalScope(EditorStyles.toolbar))
-        {
-            GUILayout.Label("Ping: " + (Session.PingMs < 0 ? "—" : Session.PingMs.ToString()) + " ms", EditorStyles.miniLabel);
-            GUILayout.FlexibleSpace();
-            GUILayout.Label("Sent: " + Session.PacketsSent + " packets / " + FormatBytes(Session.BytesSent), EditorStyles.miniLabel);
-            GUILayout.Space(8f);
-            GUILayout.Label("Received: " + Session.PacketsReceived + " / " + FormatBytes(Session.BytesReceived), EditorStyles.miniLabel);
-        }
-
         DrawError();
         GUILayout.FlexibleSpace();
         string button = Session.IsHost ? "Close Server" : "Leave Server";
@@ -405,6 +413,13 @@ public sealed class CollaborationTool : EditorWindow
         {
             if (Session.IsHost) Session.EndRemoteSession();
             else if (Session.LeaveAndOpenEmptyScene()) page = Page.Home;
+        }
+        EditorGUILayout.Space(5f);
+        using (new EditorGUILayout.HorizontalScope())
+        {
+            GUILayout.Label("Ping " + (Session.PingMs < 0 ? "—" : Session.PingMs.ToString()) + " ms", EditorStyles.miniLabel);
+            GUILayout.FlexibleSpace();
+            GUILayout.Label(Session.PacketsSent + " packets sent  •  " + Session.PacketsReceived + " received", EditorStyles.miniLabel);
         }
     }
 
@@ -591,6 +606,17 @@ internal class CollaborationSessionImplementation
     public long BytesReceived => Interlocked.Read(ref bytesReceived);
     public IReadOnlyList<CollaborationPlayer> Players => players;
     public IReadOnlyList<string> Chat => chat;
+
+    public bool IsLocalChatLine(string line)
+    {
+        return (line ?? "").Contains("] " + CleanName(localName) + ":");
+    }
+
+    public string FormatChatLine(string line)
+    {
+        if (!IsLocalChatLine(line)) return line ?? "";
+        return (line ?? "").Replace("] " + CleanName(localName) + ":", "] You:");
+    }
 
     public CollaborationSessionImplementation()
     {
