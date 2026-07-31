@@ -35,6 +35,15 @@ public sealed class CollaborationTool : EditorWindow
     private GUIStyle subtitleStyle;
     private GUIStyle centeredLabelStyle;
     private GUIStyle centeredDetailStyle;
+    private GUIStyle panelStyle;
+    private GUIStyle tabStyle;
+    private GUIStyle tabActiveStyle;
+    private GUIStyle tabContainerStyle;
+    private GUIStyle leaveStyle;
+    private GUIStyle fieldStyle;
+    private GUIStyle flatButtonStyle;
+    private GUIStyle chatPanelStyle;
+    private static readonly Color WindowBackground = new Color32(23, 25, 29, 255);
 
     [MenuItem("Collaborate/Window")]
     private static void OpenWindow()
@@ -76,6 +85,7 @@ public sealed class CollaborationTool : EditorWindow
     private void OnGUI()
     {
         EnsureStyles();
+        EditorGUI.DrawRect(new Rect(0f, 0f, position.width, position.height), WindowBackground);
         if (Session.ShowingUpdateCheck)
         {
             DrawBusyScreen("Checking For Updates…", "Looking for a newer version.");
@@ -132,6 +142,59 @@ public sealed class CollaborationTool : EditorWindow
             alignment = TextAnchor.MiddleCenter,
             wordWrap = true
         };
+        panelStyle = new GUIStyle
+        {
+            normal = { background = SolidTexture(new Color32(34, 37, 43, 255)) },
+            padding = new RectOffset(14, 14, 14, 14),
+            margin = new RectOffset(0, 0, 0, 0)
+        };
+        chatPanelStyle = new GUIStyle(panelStyle) { padding = new RectOffset(12, 12, 12, 12) };
+        tabStyle = new GUIStyle(EditorStyles.miniButton)
+        {
+            normal = { background = SolidTexture(new Color32(17, 19, 24, 255)), textColor = new Color32(155, 163, 175, 255) },
+            hover = { background = SolidTexture(new Color32(34, 37, 43, 255)), textColor = Color.white },
+            fixedHeight = 30f,
+            fontStyle = FontStyle.Bold,
+            border = new RectOffset(0, 0, 0, 0)
+        };
+        tabActiveStyle = new GUIStyle(tabStyle)
+        {
+            normal = { background = SolidTexture(new Color32(41, 45, 52, 255)), textColor = new Color32(242, 244, 247, 255) }
+        };
+        tabContainerStyle = new GUIStyle
+        {
+            normal = { background = SolidTexture(new Color32(17, 19, 24, 255)) },
+            padding = new RectOffset(3, 3, 3, 3)
+        };
+        flatButtonStyle = new GUIStyle(EditorStyles.miniButton)
+        {
+            normal = { background = SolidTexture(new Color32(41, 45, 52, 255)), textColor = new Color32(242, 244, 247, 255) },
+            hover = { background = SolidTexture(new Color32(52, 58, 68, 255)), textColor = Color.white },
+            padding = new RectOffset(12, 12, 7, 7),
+            border = new RectOffset(0, 0, 0, 0)
+        };
+        leaveStyle = new GUIStyle(flatButtonStyle)
+        {
+            normal = { background = SolidTexture(new Color32(58, 34, 39, 255)), textColor = new Color32(255, 217, 220, 255) },
+            hover = { background = SolidTexture(new Color32(82, 43, 50, 255)), textColor = Color.white },
+            fontStyle = FontStyle.Bold
+        };
+        fieldStyle = new GUIStyle(EditorStyles.textField)
+        {
+            normal = { background = SolidTexture(new Color32(21, 23, 27, 255)), textColor = new Color32(242, 244, 247, 255) },
+            focused = { background = SolidTexture(new Color32(21, 23, 27, 255)), textColor = Color.white },
+            padding = new RectOffset(10, 10, 7, 7),
+            fixedHeight = 30f,
+            border = new RectOffset(0, 0, 0, 0)
+        };
+    }
+
+    private static Texture2D SolidTexture(Color color)
+    {
+        Texture2D texture = new Texture2D(1, 1) { hideFlags = HideFlags.HideAndDontSave };
+        texture.SetPixel(0, 0, color);
+        texture.Apply();
+        return texture;
     }
 
     private void DrawCreatingServer()
@@ -324,7 +387,11 @@ public sealed class CollaborationTool : EditorWindow
 
     private void DrawSession()
     {
-        sessionTab = GUILayout.Toolbar(sessionTab, new[] { "Players", "Chat" }, GUILayout.Height(28f));
+        using (new EditorGUILayout.HorizontalScope(tabContainerStyle, GUILayout.Height(36f)))
+        {
+            if (GUILayout.Button("Players", sessionTab == 0 ? tabActiveStyle : tabStyle, GUILayout.ExpandWidth(true))) sessionTab = 0;
+            if (GUILayout.Button("Chat", sessionTab == 1 ? tabActiveStyle : tabStyle, GUILayout.ExpandWidth(true))) sessionTab = 1;
+        }
         EditorGUILayout.Space(10f);
         EditorGUILayout.LabelField("Collaboration", titleStyle);
         EditorGUILayout.LabelField("Realtime Editing", subtitleStyle);
@@ -339,15 +406,15 @@ public sealed class CollaborationTool : EditorWindow
         {
             if (Session.IsHost && !string.IsNullOrEmpty(Session.ShareLink))
             {
-                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+                using (new EditorGUILayout.VerticalScope(panelStyle))
                 {
                     EditorGUILayout.LabelField("Invite others", EditorStyles.boldLabel);
                     EditorGUILayout.LabelField("Share this server link with collaborators.", EditorStyles.wordWrappedMiniLabel);
                     GUILayout.Space(6f);
                     using (new EditorGUILayout.HorizontalScope())
                     {
-                        EditorGUILayout.PasswordField(Session.ShareLink);
-                        if (GUILayout.Button("Copy", GUILayout.Width(58f)))
+                        EditorGUILayout.PasswordField(Session.ShareLink, fieldStyle);
+                        if (GUILayout.Button("Copy", flatButtonStyle, GUILayout.Width(58f), GUILayout.Height(30f)))
                             EditorGUIUtility.systemCopyBuffer = Session.ShareLink;
                     }
                 }
@@ -367,7 +434,7 @@ public sealed class CollaborationTool : EditorWindow
                     string scene = string.IsNullOrEmpty(player.SceneName) ? "Unknown scene" : player.SceneName;
                     GUILayout.Label(player.Name + "  •  " + scene, GUILayout.ExpandWidth(true));
                     GUILayout.Label(player.PingMs < 0 ? "— ms" : player.PingMs + " ms", EditorStyles.miniLabel, GUILayout.Width(52f));
-                    if (Session.IsHost && !player.IsHost && GUILayout.Button("Kick", GUILayout.Width(48f)))
+                    if (Session.IsHost && !player.IsHost && GUILayout.Button("Kick", flatButtonStyle, GUILayout.Width(48f), GUILayout.Height(24f)))
                         Session.Kick(player.Id);
                 }
                 GUILayout.Space(3f);
@@ -376,7 +443,7 @@ public sealed class CollaborationTool : EditorWindow
         }
         else
         {
-            chatScroll = EditorGUILayout.BeginScrollView(chatScroll, EditorStyles.helpBox, GUILayout.ExpandHeight(true));
+            chatScroll = EditorGUILayout.BeginScrollView(chatScroll, chatPanelStyle, GUILayout.ExpandHeight(true));
             foreach (string line in Session.Chat.ToArray())
             {
                 bool own = Session.IsLocalChatLine(line);
@@ -393,10 +460,10 @@ public sealed class CollaborationTool : EditorWindow
             using (new EditorGUILayout.HorizontalScope())
             {
                 GUI.SetNextControlName("CollaborationChat");
-                chatText = EditorGUILayout.TextField(chatText);
+                chatText = EditorGUILayout.TextField(chatText, fieldStyle);
                 bool enter = Event.current.type == EventType.KeyDown && Event.current.keyCode == KeyCode.Return &&
                              GUI.GetNameOfFocusedControl() == "CollaborationChat";
-                if ((GUILayout.Button("Send", GUILayout.Width(55f)) || enter) && !string.IsNullOrWhiteSpace(chatText))
+                if ((GUILayout.Button("Send", flatButtonStyle, GUILayout.Width(55f), GUILayout.Height(30f)) || enter) && !string.IsNullOrWhiteSpace(chatText))
                 {
                     Session.SendChat(chatText.Trim());
                     chatText = "";
@@ -409,7 +476,7 @@ public sealed class CollaborationTool : EditorWindow
         DrawError();
         GUILayout.FlexibleSpace();
         string button = Session.IsHost ? "Close Server" : "Leave Server";
-        if (GUILayout.Button(button, GUILayout.Height(26f)))
+        if (GUILayout.Button(button, leaveStyle, GUILayout.Height(32f)))
         {
             if (Session.IsHost) Session.EndRemoteSession();
             else if (Session.LeaveAndOpenEmptyScene()) page = Page.Home;
