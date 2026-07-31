@@ -82,7 +82,7 @@ public sealed class CollaborationTool : EditorWindow
         }
         if (!Session.IsHost && Session.Connecting)
         {
-            DrawBusyScreen("Connecting to Server…", Session.ConnectionDetail);
+            DrawBusyScreen("Connecting to Server…", Session.ConnectionDetail, true);
             return;
         }
         if (Session.IsHost && (Session.Connecting || (Session.Connected && string.IsNullOrEmpty(Session.ShareLink))))
@@ -165,7 +165,7 @@ public sealed class CollaborationTool : EditorWindow
         Repaint();
     }
 
-    private void DrawBusyScreen(string heading, string detail)
+    private void DrawBusyScreen(string heading, string detail, bool canCancel = false)
     {
         GUILayout.FlexibleSpace();
         int frame = (int)(EditorApplication.timeSinceStartup * 10d) % 12;
@@ -179,6 +179,21 @@ public sealed class CollaborationTool : EditorWindow
         GUILayout.Space(12f);
         EditorGUILayout.LabelField(heading, centeredLabelStyle, GUILayout.Height(24f));
         EditorGUILayout.LabelField(detail ?? "", centeredDetailStyle, GUILayout.Height(42f));
+        if (canCancel)
+        {
+            GUILayout.Space(8f);
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                GUILayout.FlexibleSpace();
+                if (GUILayout.Button("Cancel", GUILayout.Width(120f), GUILayout.Height(30f)))
+                {
+                    Session.Close();
+                    page = Page.Home;
+                    GUIUtility.ExitGUI();
+                }
+                GUILayout.FlexibleSpace();
+            }
+        }
         GUILayout.FlexibleSpace();
         Repaint();
     }
@@ -581,6 +596,7 @@ internal class CollaborationSessionImplementation
         try
         {
             cancellation = new CancellationTokenSource();
+            CancellationToken joinToken = cancellation.Token;
             Uri uri = MakeWebSocketUri(link);
             ConnectionDetail = "Opening a secure WebSocket connection to " + uri.Host + "…";
             Exception lastError = null;
@@ -593,7 +609,7 @@ internal class CollaborationSessionImplementation
                     Status = attempt == 1 ? "Connecting…" : "Waiting for server… (" + attempt + "/6)";
                     ConnectionDetail = "Attempt " + attempt + " of 6: contacting " + uri.Host + "…";
                     Changed?.Invoke();
-                    await client.ConnectAsync(uri, cancellation.Token);
+                    await client.ConnectAsync(uri, joinToken);
                     ConnectionDetail = "WebSocket connected. Joining the collaboration session…";
                     Changed?.Invoke();
                     lastError = null;
@@ -606,7 +622,8 @@ internal class CollaborationSessionImplementation
                     Changed?.Invoke();
                     client?.Dispose();
                     client = null;
-                    if (attempt < 6) await Task.Delay(1500, cancellation.Token);
+                    if (joinToken.IsCancellationRequested) return;
+                    if (attempt < 6) await Task.Delay(1500, joinToken);
                 }
             }
             if (lastError != null)
@@ -614,12 +631,16 @@ internal class CollaborationSessionImplementation
 
             Connected = true;
             Connecting = false;
-            _ = ClientReceiveLoop(cancellation.Token);
+            _ = ClientReceiveLoop(joinToken);
             string scene = GetActiveSceneName();
             await SendClient(new CollaborationMessage { type = "join", id = LocalId, name = localName, scene = scene });
             AddOrUpdatePlayer(LocalId, localName, false).SceneName = scene;
             Status = "Connected";
             QueueChanged();
+        }
+        catch (OperationCanceledException)
+        {
+            // The user pressed Cancel; Close() already restored the home state.
         }
         catch (Exception exception)
         {
@@ -1532,9 +1553,13 @@ internal class CollaborationSessionImplementation
             Match match = Regex.Match(args.Data,
                 @"(?:https://)?([a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*\.(?:localhost\.run|lhr\.life|lhr\.rocks))",
                 RegexOptions.IgnoreCase);
-            if (match.Success)
+            if (match.Success && args.Data.IndexOf("tunneled", StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                string link = "https://" + match.Groups[1].Value;
+                string host = match.Groups[1].Value;
+                if (host.Equals("admin.localhost.run", StringComparison.OrdinalIgnoreCase) ||
+                    host.Equals("www.localhost.run", StringComparison.OrdinalIgnoreCase) ||
+                    host.Equals("ssh.localhost.run", StringComparison.OrdinalIgnoreCase)) return;
+                string link = "https://" + host;
                 mainThread.Enqueue(() =>
                 {
                     if (token.IsCancellationRequested || !Connected || !string.IsNullOrEmpty(ShareLink)) return;
