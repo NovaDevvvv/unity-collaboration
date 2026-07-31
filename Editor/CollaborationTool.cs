@@ -258,6 +258,17 @@ internal sealed class CollaborationPlayer
 [InitializeOnLoad]
 internal sealed class CollaborationSession
 {
+    [Serializable]
+    private sealed class GitHubCommit
+    {
+        public string sha;
+    }
+
+    private const string LatestCommitUrl = "https://api.github.com/repos/novadevvvv/unity-collaboration/commits/main";
+    private const string RawToolUrl = "https://raw.githubusercontent.com/novadevvvv/unity-collaboration/{0}/Editor/CollaborationTool.cs";
+    private const string InstalledCommitKey = "NovaDev.UnityCollaboration.InstalledCommit";
+    private const double UpdateCheckInterval = 300d;
+
     private sealed class Peer
     {
         public string Id;
@@ -276,7 +287,6 @@ internal sealed class CollaborationSession
     private HttpListener listener;
     private ClientWebSocket client;
     private Process cloudflared;
-    private FileSystemWatcher assetWatcher;
     private string localName;
     private double lastCursorSend;
     private double lastPingSend;
@@ -287,8 +297,9 @@ internal sealed class CollaborationSession
     private long bytesSent;
     private long bytesReceived;
     private double saveAt = -1d;
-    private double assetRefreshAt = -1d;
     private double suppressAssetEventsUntil;
+    private double nextUpdateCheck;
+    private bool checkingForUpdate;
 
     public event Action Changed;
     public bool IsHost { get; private set; }
@@ -316,7 +327,7 @@ internal sealed class CollaborationSession
         Undo.postprocessModifications += OnPostprocessModifications;
         EditorApplication.hierarchyChanged += ScheduleProjectSave;
         ObjectChangeEvents.changesPublished += OnObjectChanges;
-        StartAssetWatcher();
+        EditorApplication.delayCall += CheckForUpdate;
     }
 
     public async void Create(string name)
@@ -447,15 +458,10 @@ internal sealed class CollaborationSession
     {
         while (mainThread.TryDequeue(out Action action))
             action();
+        double now = EditorApplication.timeSinceStartup;
+        if (now >= nextUpdateCheck) CheckForUpdate();
         if (!Connected) return;
 
-        double now = EditorApplication.timeSinceStartup;
-        if (assetRefreshAt > 0d && now >= assetRefreshAt)
-        {
-            assetRefreshAt = -1d;
-            if (ShouldPublishAssetEvents)
-                AssetDatabase.Refresh(ImportAssetOptions.ForceUpdate);
-        }
         if (saveAt > 0d && now >= saveAt)
         {
             saveAt = -1d;
@@ -858,39 +864,92 @@ internal sealed class CollaborationSession
             saveAt = EditorApplication.timeSinceStartup + 0.2d;
     }
 
-    private void StartAssetWatcher()
+    private async void CheckForUpdate()
     {
+        if (checkingForUpdate || EditorApplication.timeSinceStartup < nextUpdateCheck) return;
+        checkingForUpdate = true;
+        nextUpdateCheck = EditorApplication.timeSinceStartup + UpdateCheckInterval;
         try
         {
-            assetWatcher = new FileSystemWatcher(Application.dataPath)
+            string commitJson;
+            using (WebClient web = CreateGitHubClient())
+                commitJson = await web.DownloadStringTaskAsync(new Uri(LatestCommitUrl));
+
+            GitHubCommit commit = JsonUtility.FromJson<GitHubCommit>(commitJson);
+            if (commit == null || string.IsNullOrWhiteSpace(commit.sha))
+                return;
+            string installedCommit = EditorPrefs.GetString(InstalledCommitKey);
+            if (string.IsNullOrEmpty(installedCommit))
             {
-                IncludeSubdirectories = true,
-                NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName |
-                               NotifyFilters.LastWrite | NotifyFilters.Size
-            };
-            FileSystemEventHandler changed = (_, __) => QueueAssetRefresh();
-            RenamedEventHandler renamed = (_, __) => QueueAssetRefresh();
-            assetWatcher.Changed += changed;
-            assetWatcher.Created += changed;
-            assetWatcher.Deleted += changed;
-            assetWatcher.Renamed += renamed;
-            assetWatcher.EnableRaisingEvents = true;
+                EditorPrefs.SetString(InstalledCommitKey, commit.sha);
+                return;
+            }
+            if (string.Equals(installedCommit, commit.sha, StringComparison.OrdinalIgnoreCase)) return;
+
+            string source;
+            using (WebClient web = CreateGitHubClient())
+                source = await web.DownloadStringTaskAsync(new Uri(string.Format(RawToolUrl, commit.sha)));
+
+            mainThread.Enqueue(() => InstallUpdate(commit.sha, source));
         }
         catch (Exception exception)
         {
-            Debug.LogWarning("Collaboration: automatic change detection could not start: " + exception.Message);
+            Debug.LogWarning("Collaboration: could not check GitHub for updates: " + exception.Message);
+        }
+        finally
+        {
+            checkingForUpdate = false;
         }
     }
 
-    private void QueueAssetRefresh()
+    private static WebClient CreateGitHubClient()
     {
-        // FileSystemWatcher callbacks run off the Unity thread. Debounce bursts (including
-        // temp-file/rename save patterns) before asking Unity to import and publish them.
-        mainThread.Enqueue(() =>
+        WebClient web = new WebClient();
+        web.Headers[HttpRequestHeader.UserAgent] = "Unity-Collaboration-Tool";
+        web.Headers[HttpRequestHeader.Accept] = "application/vnd.github+json";
+        return web;
+    }
+
+    private static void InstallUpdate(string commitSha, string source)
+    {
+        try
         {
-            if (Connected && ShouldPublishAssetEvents)
-                assetRefreshAt = EditorApplication.timeSinceStartup + 0.25d;
-        });
+            string assetPath = FindToolAssetPath();
+            if (string.IsNullOrEmpty(assetPath))
+            {
+                Debug.LogWarning("Collaboration: an update is available, but the installed CollaborationTool.cs could not be located.");
+                return;
+            }
+
+            string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+            string absolutePath = Path.GetFullPath(Path.Combine(projectRoot, assetPath));
+            if (!string.Equals(File.ReadAllText(absolutePath), source, StringComparison.Ordinal))
+            {
+                string temporaryPath = absolutePath + ".update";
+                File.WriteAllText(temporaryPath, source, new UTF8Encoding(false));
+                File.Copy(temporaryPath, absolutePath, true);
+                File.Delete(temporaryPath);
+                Debug.Log("Collaboration updated automatically from GitHub to commit " + commitSha.Substring(0, 7) + ".");
+            }
+
+            EditorPrefs.SetString(InstalledCommitKey, commitSha);
+            AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceUpdate);
+        }
+        catch (Exception exception)
+        {
+            Debug.LogWarning("Collaboration: could not install the GitHub update: " + exception.Message);
+        }
+    }
+
+    private static string FindToolAssetPath()
+    {
+        foreach (string guid in AssetDatabase.FindAssets("CollaborationTool t:MonoScript"))
+        {
+            string path = AssetDatabase.GUIDToAssetPath(guid);
+            MonoScript script = AssetDatabase.LoadAssetAtPath<MonoScript>(path);
+            if (script != null && script.GetClass() == typeof(CollaborationTool)) return path;
+        }
+        return null;
     }
 
     private void SaveChangedProjectState()
