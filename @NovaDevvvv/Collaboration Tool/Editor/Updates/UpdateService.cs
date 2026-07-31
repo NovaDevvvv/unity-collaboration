@@ -16,6 +16,7 @@ internal static class UpdateService
         "Editor/Networking/CollaborationClient.cs",
         "Editor/Networking/TunnelManager.cs",
         "Editor/Networking/NetworkDiagnostics.cs",
+        "Editor/Networking/HostHeaderProxy.cs",
         "Editor/Sync/AssetSyncService.cs",
         "Editor/Updates/UpdateService.cs",
         "Editor/UI/CollaborationStyles.cs",

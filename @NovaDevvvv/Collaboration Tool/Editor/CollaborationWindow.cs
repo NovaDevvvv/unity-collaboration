@@ -463,6 +463,7 @@ internal class CollaborationSessionImplementation
     private ClientWebSocket client;
     private Process cloudflared;
     private Process backupTunnel;
+    private HostHeaderProxy backupProxy;
     private string serverServiceDetail;
     private int serverLinkAttempt;
     private string localName;
@@ -686,6 +687,7 @@ internal class CollaborationSessionImplementation
             cloudflared?.Dispose();
         }
         catch { }
+        try { backupProxy?.Dispose(); } catch { }
         try
         {
             if (backupTunnel != null && !backupTunnel.HasExited)
@@ -697,6 +699,7 @@ internal class CollaborationSessionImplementation
         client = null;
         cloudflared = null;
         backupTunnel = null;
+        backupProxy = null;
         cancellation?.Dispose();
         cancellation = null;
         players.Clear();
@@ -1499,11 +1502,12 @@ internal class CollaborationSessionImplementation
     {
         ConnectionDetail = "Primary link service unavailable. Trying backup serverâ€¦";
         Changed?.Invoke();
+        int proxyPort = FindFreePort();
         ProcessStartInfo info = new ProcessStartInfo
         {
             FileName = "ssh",
             Arguments = "-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 " +
-                        "-o ExitOnForwardFailure=yes -R 80:127.0.0.1:" + port + " nokey@localhost.run",
+                        "-o ExitOnForwardFailure=yes -R 80:127.0.0.1:" + proxyPort + " nokey@localhost.run",
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardOutput = true,
@@ -1548,6 +1552,8 @@ internal class CollaborationSessionImplementation
         });
         try
         {
+            backupProxy = new HostHeaderProxy(port, proxyPort);
+            backupProxy.Start(token);
             process.Start();
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
@@ -1555,6 +1561,8 @@ internal class CollaborationSessionImplementation
         }
         catch (Exception exception)
         {
+            try { backupProxy?.Dispose(); } catch { }
+            backupProxy = null;
             Error = "The backup server could not be started. Make sure Windows OpenSSH Client is installed.\n\n" + DescribeException(exception);
             ConnectionDetail = "Server link creation failed.";
             Changed?.Invoke();
