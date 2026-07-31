@@ -225,7 +225,8 @@ public sealed class CollaborationTool : EditorWindow
         {
             using (new EditorGUILayout.HorizontalScope())
             {
-                GUILayout.Label(player.Name + (player.IsHost ? " (Host)" : ""), GUILayout.ExpandWidth(true));
+                string scene = string.IsNullOrEmpty(player.SceneName) ? "Unknown scene" : player.SceneName;
+                GUILayout.Label(player.Name + (player.IsHost ? " (Host)" : "") + "  •  " + scene, GUILayout.ExpandWidth(true));
                 GUILayout.Label(player.PingMs < 0 ? "— ms" : player.PingMs + " ms", EditorStyles.miniLabel, GUILayout.Width(52f));
                 if (Session.IsHost && !player.IsHost && GUILayout.Button("Kick", GUILayout.Width(48f)))
                     Session.Kick(player.Id);
@@ -325,6 +326,8 @@ internal sealed class CollaborationMessage
     public long stamp;
     public string[] ids;
     public string[] names;
+    public string[] scenes;
+    public string scene;
     public string path;
     public string path2;
     public string data;
@@ -334,6 +337,7 @@ internal sealed class CollaborationPlayer
 {
     public string Id;
     public string Name;
+    public string SceneName;
     public bool IsHost;
     public int PingMs = -1;
     public float CursorX = -1f;
@@ -359,6 +363,7 @@ internal sealed class CollaborationSession
     {
         public string Id;
         public string Name;
+        public string SceneName;
         public WebSocket Socket;
         public readonly SemaphoreSlim SendLock = new SemaphoreSlim(1, 1);
         public int Ping = -1;
@@ -374,6 +379,7 @@ internal sealed class CollaborationSession
     private ClientWebSocket client;
     private Process cloudflared;
     private string localName;
+    private string lastLocalScene;
     private double lastCursorSend;
     private double lastPingSend;
     private float pendingCursorX = -1f;
@@ -433,7 +439,7 @@ internal sealed class CollaborationSession
             listener.Prefixes.Add("http://127.0.0.1:" + port + "/");
             listener.Start();
             _ = AcceptLoop(cancellation.Token);
-            AddOrUpdatePlayer(LocalId, localName, true);
+            AddOrUpdatePlayer(LocalId, localName, true).SceneName = GetActiveSceneName();
             Connected = true;
             Connecting = false;
             Status = "Creating server link…";
@@ -462,8 +468,9 @@ internal sealed class CollaborationSession
             Connected = true;
             Connecting = false;
             _ = ClientReceiveLoop(cancellation.Token);
-            await SendClient(new CollaborationMessage { type = "join", id = LocalId, name = localName });
-            AddOrUpdatePlayer(LocalId, localName, false);
+            string scene = GetActiveSceneName();
+            await SendClient(new CollaborationMessage { type = "join", id = LocalId, name = localName, scene = scene });
+            AddOrUpdatePlayer(LocalId, localName, false).SceneName = scene;
             Status = "Connected";
             QueueChanged();
         }
@@ -486,6 +493,19 @@ internal sealed class CollaborationSession
     {
         pendingCursorX = Mathf.Clamp01(x);
         pendingCursorY = Mathf.Clamp01(y);
+    }
+
+    private void PublishLocalScene(string sceneName)
+    {
+        lastLocalScene = CleanSceneName(sceneName);
+        CollaborationPlayer localPlayer = players.FirstOrDefault(player => player.Id == LocalId);
+        if (localPlayer != null) localPlayer.SceneName = lastLocalScene;
+        CollaborationMessage message = new CollaborationMessage
+        {
+            type = "scene", id = LocalId, name = localName, scene = lastLocalScene
+        };
+        if (IsHost) _ = Broadcast(message); else _ = SendClient(message);
+        Changed?.Invoke();
     }
 
     public void Kick(string id)
@@ -534,6 +554,7 @@ internal sealed class CollaborationSession
     private void Reset(string name, bool host)
     {
         localName = name;
+        lastLocalScene = null;
         LocalId = Guid.NewGuid().ToString("N");
         IsHost = host;
         Error = "";
@@ -549,6 +570,10 @@ internal sealed class CollaborationSession
         double now = EditorApplication.timeSinceStartup;
         if (now >= nextUpdateCheck) CheckForUpdate();
         if (!Connected) return;
+
+        string activeScene = GetActiveSceneName();
+        if (!string.Equals(activeScene, lastLocalScene, StringComparison.Ordinal))
+            PublishLocalScene(activeScene);
 
         if (saveAt > 0d && now >= saveAt)
         {
@@ -617,8 +642,9 @@ internal sealed class CollaborationSession
                 {
                     peer.Id = message.id;
                     peer.Name = CleanName(message.name);
+                    peer.SceneName = CleanSceneName(message.scene);
                     peers[peer.Id] = peer;
-                    mainThread.Enqueue(() => AddOrUpdatePlayer(peer.Id, peer.Name, false));
+                    mainThread.Enqueue(() => AddOrUpdatePlayer(peer.Id, peer.Name, false).SceneName = peer.SceneName);
                     BroadcastRoster();
                     AddChat("Server", peer.Name + " joined.");
                 }
@@ -638,6 +664,7 @@ internal sealed class CollaborationSession
                 }
                 else
                 {
+                    if (message.type == "scene") peer.SceneName = CleanSceneName(message.scene);
                     HandleIncoming(message);
                     await Broadcast(message, peer.Id);
                 }
@@ -707,8 +734,13 @@ internal sealed class CollaborationSession
                 HashSet<string> current = new HashSet<string>(message.ids ?? Array.Empty<string>());
                 players.RemoveAll(item => item.Id != LocalId && !current.Contains(item.Id));
                 for (int i = 0; i < (message.ids?.Length ?? 0); i++)
-                    AddOrUpdatePlayer(message.ids[i], message.names[i], i == 0);
+                {
+                    CollaborationPlayer player = AddOrUpdatePlayer(message.ids[i], message.names[i], i == 0);
+                    if (i < (message.scenes?.Length ?? 0)) player.SceneName = CleanSceneName(message.scenes[i]);
+                }
             }
+            else if (message.type == "scene")
+                AddOrUpdatePlayer(message.id, message.name, message.id == LocalId && IsHost).SceneName = CleanSceneName(message.scene);
             else if (message.type == "file" || message.type == "delete" || message.type == "move")
                 ApplyRemoteFile(message);
             Changed?.Invoke();
@@ -722,7 +754,8 @@ internal sealed class CollaborationSession
         {
             type = "roster",
             ids = new[] { LocalId }.Concat(connected.Select(peer => peer.Id)).ToArray(),
-            names = new[] { localName }.Concat(connected.Select(peer => peer.Name)).ToArray()
+            names = new[] { localName }.Concat(connected.Select(peer => peer.Name)).ToArray(),
+            scenes = new[] { GetActiveSceneName() }.Concat(connected.Select(peer => CleanSceneName(peer.SceneName))).ToArray()
         };
         _ = Broadcast(roster);
         mainThread.Enqueue(() =>
@@ -731,6 +764,7 @@ internal sealed class CollaborationSession
             {
                 CollaborationPlayer player = AddOrUpdatePlayer(peer.Id, peer.Name, false);
                 player.PingMs = peer.Ping;
+                player.SceneName = CleanSceneName(peer.SceneName);
             }
             Changed?.Invoke();
         });
@@ -1193,6 +1227,18 @@ internal sealed class CollaborationSession
     {
         value = string.IsNullOrWhiteSpace(value) ? "Player" : value.Trim();
         return value.Length > 32 ? value.Substring(0, 32) : value;
+    }
+
+    private static string GetActiveSceneName()
+    {
+        Scene scene = SceneManager.GetActiveScene();
+        return CleanSceneName(scene.IsValid() && !string.IsNullOrWhiteSpace(scene.name) ? scene.name : "Untitled");
+    }
+
+    private static string CleanSceneName(string value)
+    {
+        value = string.IsNullOrWhiteSpace(value) ? "Unknown scene" : value.Trim();
+        return value.Length > 64 ? value.Substring(0, 64) : value;
     }
 
     private static int FindFreePort()
