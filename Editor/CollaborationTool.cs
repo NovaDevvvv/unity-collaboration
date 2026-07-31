@@ -155,6 +155,18 @@ public sealed class CollaborationTool : EditorWindow
                 if (GUILayout.Button("Join Server", GUILayout.Height(34f))) page = Page.Join;
                 GUILayout.Space(8f);
             }
+            GUILayout.FlexibleSpace();
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                using (new EditorGUI.DisabledScope(Session.CheckingForUpdate))
+                {
+                    if (GUILayout.Button(Session.CheckingForUpdate ? "Checking…" : "↻  Check for Updates", GUILayout.Width(145f), GUILayout.Height(25f)))
+                        Session.CheckForUpdatesNow();
+                }
+                if (!string.IsNullOrEmpty(Session.UpdateStatus))
+                    GUILayout.Label(Session.UpdateStatus, EditorStyles.miniLabel);
+                GUILayout.FlexibleSpace();
+            }
             return;
         }
 
@@ -343,7 +355,7 @@ internal sealed class CollaborationSession
     private const string LatestCommitUrl = "https://api.github.com/repos/novadevvvv/unity-collaboration/commits/main";
     private const string RawToolUrl = "https://raw.githubusercontent.com/novadevvvv/unity-collaboration/{0}/Editor/CollaborationTool.cs";
     private const string InstalledCommitKey = "NovaDev.UnityCollaboration.InstalledCommit";
-    private const double UpdateCheckInterval = 300d;
+    private const double UpdateCheckInterval = 60d;
 
     private sealed class Peer
     {
@@ -385,6 +397,8 @@ internal sealed class CollaborationSession
     public string ShareLink { get; private set; }
     public string Status { get; private set; }
     public string Error { get; private set; }
+    public string UpdateStatus { get; private set; }
+    public bool CheckingForUpdate => checkingForUpdate;
     public int PingMs { get; private set; } = -1;
     public long PacketsSent => Interlocked.Read(ref packetsSent);
     public long PacketsReceived => Interlocked.Read(ref packetsReceived);
@@ -403,7 +417,7 @@ internal sealed class CollaborationSession
         Undo.postprocessModifications += OnPostprocessModifications;
         EditorApplication.hierarchyChanged += ScheduleProjectSave;
         ObjectChangeEvents.changesPublished += OnObjectChanges;
-        EditorApplication.delayCall += CheckForUpdate;
+        EditorApplication.delayCall += () => CheckForUpdate();
     }
 
     public async void Create(string name)
@@ -940,11 +954,22 @@ internal sealed class CollaborationSession
             saveAt = EditorApplication.timeSinceStartup + 0.2d;
     }
 
-    private async void CheckForUpdate()
+    public void CheckForUpdatesNow()
+    {
+        nextUpdateCheck = 0d;
+        CheckForUpdate(true);
+    }
+
+    private async void CheckForUpdate(bool showStatus = false)
     {
         if (checkingForUpdate || EditorApplication.timeSinceStartup < nextUpdateCheck) return;
         checkingForUpdate = true;
         nextUpdateCheck = EditorApplication.timeSinceStartup + UpdateCheckInterval;
+        if (showStatus)
+        {
+            UpdateStatus = "Checking GitHub…";
+            Changed?.Invoke();
+        }
         try
         {
             string commitJson;
@@ -958,24 +983,40 @@ internal sealed class CollaborationSession
             if (string.IsNullOrEmpty(installedCommit))
             {
                 EditorPrefs.SetString(InstalledCommitKey, commit.sha);
+                QueueUpdateStatus("You’re up to date");
                 return;
             }
-            if (string.Equals(installedCommit, commit.sha, StringComparison.OrdinalIgnoreCase)) return;
+            if (string.Equals(installedCommit, commit.sha, StringComparison.OrdinalIgnoreCase))
+            {
+                QueueUpdateStatus("You’re up to date");
+                return;
+            }
 
             string source;
             using (WebClient web = CreateGitHubClient())
                 source = await web.DownloadStringTaskAsync(new Uri(string.Format(RawToolUrl, commit.sha)));
 
+            QueueUpdateStatus("Installing update…");
             mainThread.Enqueue(() => InstallUpdate(commit.sha, source));
         }
         catch (Exception exception)
         {
             Debug.LogWarning("Collaboration: could not check GitHub for updates: " + exception.Message);
+            QueueUpdateStatus("Update check failed");
         }
         finally
         {
             checkingForUpdate = false;
         }
+    }
+
+    private void QueueUpdateStatus(string status)
+    {
+        mainThread.Enqueue(() =>
+        {
+            UpdateStatus = status;
+            Changed?.Invoke();
+        });
     }
 
     private static WebClient CreateGitHubClient()
