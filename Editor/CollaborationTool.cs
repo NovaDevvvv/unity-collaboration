@@ -1405,12 +1405,22 @@ internal sealed class CollaborationSession
         CancellationToken sessionToken = cancellation?.Token ?? CancellationToken.None;
         ConnectionDetail = "Creating server link… (attempt " + serverLinkAttempt + " of 3)";
         Changed?.Invoke();
+        string isolatedConfig = Path.Combine(Path.GetTempPath(), "unity-collaboration-quick-tunnel.yml");
+        try { File.WriteAllText(isolatedConfig, "{}", new UTF8Encoding(false)); }
+        catch (Exception exception)
+        {
+            Error = "The temporary server configuration could not be created.\n\n" + DescribeException(exception);
+            Changed?.Invoke();
+            return;
+        }
         ProcessStartInfo info = new ProcessStartInfo
         {
             FileName = "cloudflared",
             // HttpListener is registered specifically for 127.0.0.1. Override the
             // forwarded public Host header so Windows routes the request to it.
-            Arguments = "tunnel --no-autoupdate --url http://127.0.0.1:" + port +
+            // Use an isolated empty configuration so a user's named-tunnel config
+            // cannot prevent Quick Tunnel mode from generating a random link.
+            Arguments = "--config \"" + isolatedConfig + "\" tunnel --no-autoupdate --url http://127.0.0.1:" + port +
                         " --http-host-header 127.0.0.1:" + port,
             UseShellExecute = false,
             CreateNoWindow = true,
