@@ -20,10 +20,12 @@ internal sealed class CollaborationMessage
     public string objectId;
     public string componentId;
     public long stamp;
+    public int pingMs;
     public string[] ids;
     public string[] names;
     public string[] scenes;
     public string[] selections;
+    public int[] pings;
     public string scene;
     public string path;
     public string path2;

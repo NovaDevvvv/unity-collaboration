@@ -30,6 +30,7 @@ public sealed class CollaborationTool : EditorWindow
     private string githubPatInput = "";
     private Vector2 chatScroll;
     private Vector2 playersScroll;
+    private int sessionTab;
     private GUIStyle titleStyle;
     private GUIStyle subtitleStyle;
     private GUIStyle centeredLabelStyle;
@@ -58,6 +59,10 @@ public sealed class CollaborationTool : EditorWindow
         Session.Changed += Repaint;
         SceneView.duringSceneGui -= OnSceneGUI;
         SceneView.duringSceneGui += OnSceneGUI;
+        EditorApplication.hierarchyWindowItemOnGUI -= OnHierarchyItemGUI;
+        EditorApplication.hierarchyWindowItemOnGUI += OnHierarchyItemGUI;
+        EditorApplication.globalEventHandler -= OnGlobalEditorEvent;
+        EditorApplication.globalEventHandler += OnGlobalEditorEvent;
         if (Session.Connected)
             page = Page.Session;
     }
@@ -339,40 +344,47 @@ public sealed class CollaborationTool : EditorWindow
             }
         }
 
-        EditorGUILayout.Space(5f);
-        EditorGUILayout.LabelField("Players", EditorStyles.boldLabel);
-        playersScroll = EditorGUILayout.BeginScrollView(playersScroll, GUILayout.Height(Mathf.Min(125f, 25f + Session.Players.Count * 22f)));
-        foreach (CollaborationPlayer player in Session.Players.ToArray())
+        EditorGUILayout.Space(8f);
+        sessionTab = GUILayout.Toolbar(sessionTab, new[] { "Players", "Chat" }, GUILayout.Height(28f));
+        EditorGUILayout.Space(6f);
+        if (sessionTab == 0)
         {
+            playersScroll = EditorGUILayout.BeginScrollView(playersScroll, EditorStyles.helpBox, GUILayout.ExpandHeight(true));
+            foreach (CollaborationPlayer player in Session.Players.ToArray())
+            {
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    Rect swatch = GUILayoutUtility.GetRect(10f, 10f, GUILayout.Width(10f), GUILayout.Height(18f));
+                    EditorGUI.DrawRect(new Rect(swatch.x, swatch.y + 4f, 10f, 10f), player.Color);
+                    string scene = string.IsNullOrEmpty(player.SceneName) ? "Unknown scene" : player.SceneName;
+                    GUILayout.Label(player.Name + (player.IsHost ? " (Host)" : "") + "  •  " + scene, GUILayout.ExpandWidth(true));
+                    GUILayout.Label(player.PingMs < 0 ? "— ms" : player.PingMs + " ms", EditorStyles.miniLabel, GUILayout.Width(52f));
+                    if (Session.IsHost && !player.IsHost && GUILayout.Button("Kick", GUILayout.Width(48f)))
+                        Session.Kick(player.Id);
+                }
+                GUILayout.Space(3f);
+            }
+            EditorGUILayout.EndScrollView();
+        }
+        else
+        {
+            chatScroll = EditorGUILayout.BeginScrollView(chatScroll, EditorStyles.helpBox, GUILayout.ExpandHeight(true));
+            foreach (string line in Session.Chat.ToArray())
+                EditorGUILayout.LabelField(line, EditorStyles.wordWrappedLabel);
+            EditorGUILayout.EndScrollView();
             using (new EditorGUILayout.HorizontalScope())
             {
-                string scene = string.IsNullOrEmpty(player.SceneName) ? "Unknown scene" : player.SceneName;
-                GUILayout.Label(player.Name + (player.IsHost ? " (Host)" : "") + "  •  " + scene, GUILayout.ExpandWidth(true));
-                GUILayout.Label(player.PingMs < 0 ? "— ms" : player.PingMs + " ms", EditorStyles.miniLabel, GUILayout.Width(52f));
-                if (Session.IsHost && !player.IsHost && GUILayout.Button("Kick", GUILayout.Width(48f)))
-                    Session.Kick(player.Id);
-            }
-        }
-        EditorGUILayout.EndScrollView();
-
-        EditorGUILayout.Space(5f);
-        EditorGUILayout.LabelField("Chat", EditorStyles.boldLabel);
-        chatScroll = EditorGUILayout.BeginScrollView(chatScroll, EditorStyles.helpBox, GUILayout.MinHeight(110f), GUILayout.ExpandHeight(true));
-        foreach (string line in Session.Chat.ToArray())
-            EditorGUILayout.LabelField(line, EditorStyles.wordWrappedLabel);
-        EditorGUILayout.EndScrollView();
-        using (new EditorGUILayout.HorizontalScope())
-        {
-            GUI.SetNextControlName("CollaborationChat");
-            chatText = EditorGUILayout.TextField(chatText);
-            bool enter = Event.current.type == EventType.KeyDown && Event.current.keyCode == KeyCode.Return &&
-                         GUI.GetNameOfFocusedControl() == "CollaborationChat";
-            if ((GUILayout.Button("Send", GUILayout.Width(55f)) || enter) && !string.IsNullOrWhiteSpace(chatText))
-            {
-                Session.SendChat(chatText.Trim());
-                chatText = "";
-                GUI.FocusControl("CollaborationChat");
-                Event.current.Use();
+                GUI.SetNextControlName("CollaborationChat");
+                chatText = EditorGUILayout.TextField(chatText);
+                bool enter = Event.current.type == EventType.KeyDown && Event.current.keyCode == KeyCode.Return &&
+                             GUI.GetNameOfFocusedControl() == "CollaborationChat";
+                if ((GUILayout.Button("Send", GUILayout.Width(55f)) || enter) && !string.IsNullOrWhiteSpace(chatText))
+                {
+                    Session.SendChat(chatText.Trim());
+                    chatText = "";
+                    GUI.FocusControl("CollaborationChat");
+                    Event.current.Use();
+                }
             }
         }
 
@@ -387,10 +399,12 @@ public sealed class CollaborationTool : EditorWindow
         }
 
         DrawError();
+        GUILayout.FlexibleSpace();
         string button = Session.IsHost ? "Close Server" : "Leave Server";
         if (GUILayout.Button(button, GUILayout.Height(26f)))
         {
-            if (Session.LeaveAndOpenEmptyScene()) page = Page.Home;
+            if (Session.IsHost) Session.EndRemoteSession();
+            else if (Session.LeaveAndOpenEmptyScene()) page = Page.Home;
         }
     }
 
@@ -458,6 +472,25 @@ public sealed class CollaborationTool : EditorWindow
             if (!found) { bounds = collider.bounds; found = true; } else bounds.Encapsulate(collider.bounds);
         }
         return true;
+    }
+
+    private static void OnHierarchyItemGUI(int instanceId, Rect rect)
+    {
+        if (!Session.Connected || !Session.TryGetSelectionColor(instanceId, out Color color)) return;
+        Rect marker = new Rect(rect.xMax - 10f, rect.y + (rect.height - 7f) * 0.5f, 7f, 7f);
+        EditorGUI.DrawRect(marker, color);
+    }
+
+    private static void OnGlobalEditorEvent()
+    {
+        Event current = Event.current;
+        if (!Session.Connected || current == null ||
+            (current.type != EventType.ExecuteCommand && current.type != EventType.ValidateCommand)) return;
+        string command = current.commandName;
+        if (command != "Delete" && command != "SoftDelete" && command != "Cut" && command != "Duplicate") return;
+        if (!Selection.objects.Any(Session.IsLockedSelectionObject)) return;
+        current.Use();
+        SceneView.lastActiveSceneView?.ShowNotification(new GUIContent("This object is being edited by another player."));
     }
 }
 
@@ -529,6 +562,7 @@ internal class CollaborationSessionImplementation
     private bool checkingForUpdate;
     private bool showingUpdateCheck;
     private bool updating;
+    private bool endingSession;
     private string githubPat;
     private string availableUpdateCommit;
     private bool settingsLoaded;
@@ -601,7 +635,9 @@ internal class CollaborationSessionImplementation
             listener.Start();
             ConnectionDetail = "Local server started. Creating a secure share link…";
             _ = AcceptLoop(cancellation.Token);
-            AddOrUpdatePlayer(LocalId, localName, true).SceneName = GetActiveSceneName();
+            CollaborationPlayer hostPlayer = AddOrUpdatePlayer(LocalId, localName, true);
+            hostPlayer.SceneName = GetActiveSceneName();
+            hostPlayer.PingMs = 0;
             Connected = true;
             Connecting = false;
             Status = "Creating server link…";
@@ -777,6 +813,34 @@ internal class CollaborationSessionImplementation
         return true;
     }
 
+    public async void EndRemoteSession()
+    {
+        if (!IsHost || endingSession) return;
+        if (!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()) return;
+        endingSession = true;
+        try
+        {
+            CollaborationMessage ended = new CollaborationMessage
+            {
+                type = "kicked",
+                text = "The remote session was ended."
+            };
+            Task[] notifications = peers.Values
+                .Where(peer => peer.Socket.State == WebSocketState.Open)
+                .Select(peer => Send(peer.Socket, peer.SendLock, ended))
+                .ToArray();
+            if (notifications.Length > 0) await Task.WhenAll(notifications);
+            await Task.Delay(75);
+        }
+        catch { }
+        finally
+        {
+            Close();
+            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+            endingSession = false;
+        }
+    }
+
     private void Reset(string name, bool host)
     {
         localName = name;
@@ -900,6 +964,7 @@ internal class CollaborationSessionImplementation
                         PingMs = remotePings.Length == 0 ? 0 : (int)remotePings.Average();
                         Changed?.Invoke();
                     });
+                    await Broadcast(new CollaborationMessage { type = "latency", id = peer.Id, pingMs = peer.Ping });
                 }
                 else if (message.type == "select_request")
                     HandleSelectionRequest(peer.Id, peer.Name, message.objectId);
@@ -946,6 +1011,11 @@ internal class CollaborationSessionImplementation
                 if (message.type == "pong")
                 {
                     PingMs = (int)TimeSpan.FromTicks(DateTime.UtcNow.Ticks - message.stamp).TotalMilliseconds;
+                    mainThread.Enqueue(() =>
+                    {
+                        CollaborationPlayer localPlayer = players.FirstOrDefault(item => item.Id == LocalId);
+                        if (localPlayer != null) localPlayer.PingMs = PingMs;
+                    });
                     QueueChanged();
                 }
                 else if (message.type == "ping")
@@ -955,11 +1025,11 @@ internal class CollaborationSessionImplementation
                     string reason = message.text;
                     mainThread.Enqueue(() =>
                     {
-                        if (LeaveAndOpenEmptyScene())
-                        {
-                            Error = reason;
-                            Changed?.Invoke();
-                        }
+                        Close();
+                        Error = reason;
+                        Changed?.Invoke();
+                        if (EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo())
+                            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
                     });
                     return;
                 }
@@ -993,6 +1063,11 @@ internal class CollaborationSessionImplementation
                 Selection.activeObject = null;
                 Error = string.IsNullOrEmpty(message.text) ? "That object is being edited by another player." : message.text;
             }
+            else if (message.type == "latency")
+            {
+                CollaborationPlayer player = players.FirstOrDefault(item => item.Id == message.id);
+                if (player != null) player.PingMs = message.pingMs;
+            }
             else if (message.type == "roster")
             {
                 HashSet<string> current = new HashSet<string>(message.ids ?? Array.Empty<string>());
@@ -1002,6 +1077,7 @@ internal class CollaborationSessionImplementation
                     CollaborationPlayer player = AddOrUpdatePlayer(message.ids[i], message.names[i], i == 0);
                     if (i < (message.scenes?.Length ?? 0)) player.SceneName = CleanSceneName(message.scenes[i]);
                     if (i < (message.selections?.Length ?? 0)) player.SelectedObjectId = message.selections[i] ?? "";
+                    if (i < (message.pings?.Length ?? 0)) player.PingMs = message.pings[i];
                 }
                 selectionOwners.Clear();
                 foreach (CollaborationPlayer player in players)
@@ -1026,7 +1102,8 @@ internal class CollaborationSessionImplementation
             names = new[] { localName }.Concat(connected.Select(peer => peer.Name)).ToArray(),
             scenes = new[] { GetActiveSceneName() }.Concat(connected.Select(peer => CleanSceneName(peer.SceneName))).ToArray(),
             selections = new[] { players.FirstOrDefault(player => player.Id == LocalId)?.SelectedObjectId ?? "" }
-                .Concat(connected.Select(peer => players.FirstOrDefault(player => player.Id == peer.Id)?.SelectedObjectId ?? "")).ToArray()
+                .Concat(connected.Select(peer => players.FirstOrDefault(player => player.Id == peer.Id)?.SelectedObjectId ?? "")).ToArray(),
+            pings = new[] { 0 }.Concat(connected.Select(peer => peer.Ping)).ToArray()
         };
         _ = Broadcast(roster);
         mainThread.Enqueue(() =>
@@ -1306,6 +1383,29 @@ internal class CollaborationSessionImplementation
         GameObject gameObject = target as GameObject;
         Component component = target as Component;
         return gameObject != null ? gameObject : component != null ? component.gameObject : null;
+    }
+
+    public bool IsLockedSelectionObject(UnityEngine.Object target)
+    {
+        GameObject gameObject = target as GameObject;
+        Component component = target as Component;
+        if (gameObject == null && component != null) gameObject = component.gameObject;
+        if (gameObject == null) return false;
+        string id = GlobalObjectId.GetGlobalObjectIdSlow(gameObject).ToString();
+        return IsLockedByOther(id);
+    }
+
+    public bool TryGetSelectionColor(int instanceId, out Color color)
+    {
+        foreach (CollaborationPlayer player in players)
+        {
+            GameObject selected = ResolveGameObject(player.SelectedObjectId);
+            if (selected == null || selected.GetInstanceID() != instanceId) continue;
+            color = player.Color;
+            return true;
+        }
+        color = Color.clear;
+        return false;
     }
 
     private void RefreshObjectLocks()
