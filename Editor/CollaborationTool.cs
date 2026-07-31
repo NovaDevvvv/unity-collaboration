@@ -28,6 +28,10 @@ public sealed class CollaborationTool : EditorWindow
     private string chatText = "";
     private Vector2 chatScroll;
     private Vector2 playersScroll;
+    private GUIStyle titleStyle;
+    private GUIStyle subtitleStyle;
+    private GUIStyle centeredLabelStyle;
+    private GUIStyle centeredDetailStyle;
 
     [MenuItem("Collaborate/Window")]
     private static void OpenWindow()
@@ -57,21 +61,80 @@ public sealed class CollaborationTool : EditorWindow
 
     private void OnGUI()
     {
-        EditorGUILayout.Space(8f);
+        EnsureStyles();
+        if (Session.IsHost && (Session.Connecting || (Session.Connected && string.IsNullOrEmpty(Session.ShareLink))))
+        {
+            DrawCreatingServer();
+            return;
+        }
+
+        EditorGUILayout.Space(14f);
         using (new EditorGUILayout.HorizontalScope())
         {
-            GUILayout.Space(8f);
+            GUILayout.Space(14f);
             using (new EditorGUILayout.VerticalScope())
             {
-                EditorGUILayout.LabelField("Collaboration", EditorStyles.boldLabel);
-                EditorGUILayout.Space(5f);
+                EditorGUILayout.LabelField("Collaboration", titleStyle);
+                EditorGUILayout.LabelField(Session.Connected ? "Work together in real time" : "Create together, wherever you are", subtitleStyle);
+                EditorGUILayout.Space(12f);
                 if (Session.Connected || Session.Connecting)
                     DrawSession();
                 else
                     DrawSetup();
             }
-            GUILayout.Space(8f);
+            GUILayout.Space(14f);
         }
+    }
+
+    private void EnsureStyles()
+    {
+        if (titleStyle != null) return;
+        titleStyle = new GUIStyle(EditorStyles.boldLabel) { fontSize = 20, fixedHeight = 25f };
+        subtitleStyle = new GUIStyle(EditorStyles.label)
+        {
+            fontSize = 11,
+            normal = { textColor = EditorGUIUtility.isProSkin ? new Color(0.68f, 0.7f, 0.74f) : new Color(0.35f, 0.37f, 0.4f) }
+        };
+        centeredLabelStyle = new GUIStyle(EditorStyles.boldLabel) { alignment = TextAnchor.MiddleCenter, fontSize = 16 };
+        centeredDetailStyle = new GUIStyle(subtitleStyle) { alignment = TextAnchor.MiddleCenter };
+    }
+
+    private void DrawCreatingServer()
+    {
+        GUILayout.FlexibleSpace();
+        int frame = (int)(EditorApplication.timeSinceStartup * 10d) % 12;
+        GUIContent spinner = EditorGUIUtility.IconContent("WaitSpin" + frame.ToString("00"));
+        using (new EditorGUILayout.HorizontalScope())
+        {
+            GUILayout.FlexibleSpace();
+            GUILayout.Label(spinner, GUILayout.Width(32f), GUILayout.Height(32f));
+            GUILayout.FlexibleSpace();
+        }
+        GUILayout.Space(12f);
+        EditorGUILayout.LabelField("Creating Server…", centeredLabelStyle, GUILayout.Height(24f));
+        EditorGUILayout.LabelField("Your share link will appear in a moment.", centeredDetailStyle, GUILayout.Height(20f));
+        if (!string.IsNullOrEmpty(Session.Error))
+        {
+            GUILayout.Space(14f);
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                GUILayout.Space(24f);
+                EditorGUILayout.HelpBox(Session.Error, MessageType.Error);
+                GUILayout.Space(24f);
+            }
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                GUILayout.FlexibleSpace();
+                if (GUILayout.Button("Cancel", GUILayout.Width(110f), GUILayout.Height(28f)))
+                {
+                    Session.Close();
+                    page = Page.Home;
+                }
+                GUILayout.FlexibleSpace();
+            }
+        }
+        GUILayout.FlexibleSpace();
+        Repaint();
     }
 
     private void DrawSetup()
@@ -81,54 +144,67 @@ public sealed class CollaborationTool : EditorWindow
 
         if (page == Page.Home)
         {
-            EditorGUILayout.HelpBox("Work together in the Scene view through a temporary Cloudflare tunnel.", MessageType.Info);
-            GUILayout.Space(8f);
-            if (GUILayout.Button("Join Server", GUILayout.Height(34f))) page = Page.Join;
-            if (GUILayout.Button("Create Server", GUILayout.Height(34f))) page = Page.Create;
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            {
+                GUILayout.Space(8f);
+                EditorGUILayout.LabelField("Start a shared workspace", EditorStyles.boldLabel);
+                EditorGUILayout.LabelField("Host a new session or join with a server link.", EditorStyles.wordWrappedMiniLabel);
+                GUILayout.Space(12f);
+                if (GUILayout.Button("Create Server", GUILayout.Height(38f))) page = Page.Create;
+                GUILayout.Space(3f);
+                if (GUILayout.Button("Join Server", GUILayout.Height(34f))) page = Page.Join;
+                GUILayout.Space(8f);
+            }
             return;
         }
 
-        EditorGUILayout.LabelField(page == Page.Create ? "Create Server" : "Join Server", EditorStyles.largeLabel);
-        playerName = EditorGUILayout.TextField("Your name", playerName);
-        if (page == Page.Join)
-            serverLink = EditorGUILayout.TextField("TryCloudflare link", serverLink);
+        using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+        {
+            GUILayout.Space(6f);
+            EditorGUILayout.LabelField(page == Page.Create ? "Create a server" : "Join a server", EditorStyles.boldLabel);
+            GUILayout.Space(8f);
+            playerName = EditorGUILayout.TextField("Your name", playerName);
+            if (page == Page.Join)
+                serverLink = EditorGUILayout.TextField("Server link", serverLink);
 
-        EditorGUILayout.Space(8f);
-        using (new EditorGUI.DisabledScope(string.IsNullOrWhiteSpace(playerName) ||
-                                           (page == Page.Join && string.IsNullOrWhiteSpace(serverLink))))
-        {
-            if (GUILayout.Button(page == Page.Create ? "Create" : "Join", GUILayout.Height(30f)))
+            EditorGUILayout.Space(10f);
+            using (new EditorGUI.DisabledScope(string.IsNullOrWhiteSpace(playerName) ||
+                                               (page == Page.Join && string.IsNullOrWhiteSpace(serverLink))))
             {
-                if (page == Page.Create)
-                    Session.Create(playerName.Trim());
-                else
-                    Session.Join(playerName.Trim(), serverLink.Trim());
-                page = Page.Session;
+                if (GUILayout.Button(page == Page.Create ? "Create Server" : "Join Server", GUILayout.Height(34f)))
+                {
+                    if (page == Page.Create)
+                        Session.Create(playerName.Trim());
+                    else
+                        Session.Join(playerName.Trim(), serverLink.Trim());
+                    page = Page.Session;
+                }
             }
-        }
-        if (GUILayout.Button("Back"))
-        {
-            Session.Close();
-            page = Page.Home;
+            if (GUILayout.Button("Back", GUILayout.Height(24f)))
+            {
+                Session.Close();
+                page = Page.Home;
+            }
+            GUILayout.Space(4f);
         }
         DrawError();
     }
 
     private void DrawSession()
     {
-        if (Session.Connecting)
-            EditorGUILayout.HelpBox(Session.Status, MessageType.Info);
-        else if (Session.IsHost && string.IsNullOrEmpty(Session.ShareLink))
-            EditorGUILayout.HelpBox(Session.Status, MessageType.Info);
-
         if (Session.IsHost && !string.IsNullOrEmpty(Session.ShareLink))
         {
-            EditorGUILayout.LabelField("Share this link", EditorStyles.boldLabel);
-            using (new EditorGUILayout.HorizontalScope())
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
             {
-                EditorGUILayout.SelectableLabel(Session.ShareLink, EditorStyles.textField, GUILayout.Height(EditorGUIUtility.singleLineHeight));
-                if (GUILayout.Button("Copy", GUILayout.Width(52f)))
-                    EditorGUIUtility.systemCopyBuffer = Session.ShareLink;
+                EditorGUILayout.LabelField("Invite others", EditorStyles.boldLabel);
+                EditorGUILayout.LabelField("Share this server link with your collaborators.", EditorStyles.wordWrappedMiniLabel);
+                GUILayout.Space(5f);
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    EditorGUILayout.SelectableLabel(Session.ShareLink, EditorStyles.textField, GUILayout.Height(EditorGUIUtility.singleLineHeight));
+                    if (GUILayout.Button("Copy", GUILayout.Width(58f)))
+                        EditorGUIUtility.systemCopyBuffer = Session.ShareLink;
+                }
             }
         }
 
@@ -335,7 +411,7 @@ internal sealed class CollaborationSession
         Close();
         Reset(name, true);
         Connecting = true;
-        Status = "Starting local WebSocket server…";
+        Status = "Creating server…";
         Changed?.Invoke();
         try
         {
@@ -348,7 +424,7 @@ internal sealed class CollaborationSession
             AddOrUpdatePlayer(LocalId, localName, true);
             Connected = true;
             Connecting = false;
-            Status = "Starting Cloudflare Quick Tunnel…";
+            Status = "Creating server link…";
             StartCloudflared(port);
         }
         catch (Exception exception)
@@ -1021,7 +1097,7 @@ internal sealed class CollaborationSession
         cloudflared.Exited += (_, __) =>
         {
             if (Connected && string.IsNullOrEmpty(ShareLink))
-                QueueError("cloudflared stopped before creating a tunnel.");
+                QueueError("The server stopped before creating a share link.");
         };
         try
         {
@@ -1031,7 +1107,7 @@ internal sealed class CollaborationSession
         }
         catch (Exception exception)
         {
-            Error = "The local server is running, but cloudflared could not start. Install cloudflared and make sure it is on PATH. " + exception.Message;
+            Error = "The server link could not be created. Make sure the server service is installed and available, then try again. " + exception.Message;
             Changed?.Invoke();
         }
     }
