@@ -18,10 +18,12 @@ internal sealed class CollaborationMessage
     public float sy;
     public float sz;
     public string objectId;
+    public string componentId;
     public long stamp;
     public string[] ids;
     public string[] names;
     public string[] scenes;
+    public string[] selections;
     public string scene;
     public string path;
     public string path2;

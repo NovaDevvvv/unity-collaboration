@@ -420,6 +420,17 @@ public sealed class CollaborationTool : EditorWindow
             Session.UpdateCameraPose(sceneView.camera.transform.position, sceneView.camera.transform.rotation);
         foreach (CollaborationPlayer player in Session.Players.ToArray())
         {
+            if (!string.IsNullOrEmpty(player.SelectedObjectId))
+            {
+                GameObject selected = Session.ResolveGameObject(player.SelectedObjectId);
+                if (selected != null && TryGetBounds(selected, out Bounds bounds))
+                {
+                    Color old = Handles.color;
+                    Handles.color = new Color(player.Color.r, player.Color.g, player.Color.b, 0.85f);
+                    Handles.DrawWireCube(bounds.center, bounds.size * 1.015f);
+                    Handles.color = old;
+                }
+            }
             if (player.Id == Session.LocalId || !player.HasCameraPose) continue;
             float size = HandleUtility.GetHandleSize(player.CameraPosition) * 0.7f;
             Color previous = Handles.color;
@@ -428,6 +439,23 @@ public sealed class CollaborationTool : EditorWindow
             Handles.Label(player.CameraPosition + Vector3.up * size * 0.35f, player.Name, EditorStyles.boldLabel);
             Handles.color = previous;
         }
+    }
+
+    private static bool TryGetBounds(GameObject target, out Bounds bounds)
+    {
+        Renderer[] renderers = target.GetComponentsInChildren<Renderer>();
+        Collider[] colliders = target.GetComponentsInChildren<Collider>();
+        bool found = false;
+        bounds = new Bounds(target.transform.position, Vector3.one * HandleUtility.GetHandleSize(target.transform.position) * 0.1f);
+        foreach (Renderer renderer in renderers)
+        {
+            if (!found) { bounds = renderer.bounds; found = true; } else bounds.Encapsulate(renderer.bounds);
+        }
+        foreach (Collider collider in colliders)
+        {
+            if (!found) { bounds = collider.bounds; found = true; } else bounds.Encapsulate(collider.bounds);
+        }
+        return true;
     }
 }
 
@@ -477,13 +505,19 @@ internal class CollaborationSessionImplementation
     private string lastLocalScene;
     private double lastPresenceSend;
     private double lastTransformScan;
+    private double lastPropertyScan;
     private double lastPingSend;
     private Vector3 pendingCameraPosition;
     private Quaternion pendingCameraRotation = Quaternion.identity;
     private bool cameraPoseDirty;
     private readonly Dictionary<string, string> transformStates = new Dictionary<string, string>();
+    private readonly Dictionary<string, string> componentStates = new Dictionary<string, string>();
+    private readonly Dictionary<UnityEngine.Object, HideFlags> lockedObjectFlags = new Dictionary<UnityEngine.Object, HideFlags>();
+    private readonly Dictionary<string, string> selectionOwners = new Dictionary<string, string>();
     private bool applyingRemoteTransform;
+    private bool applyingRemoteProperty;
     private bool transformSnapshotReady;
+    private string localSelectionId;
     private long packetsSent;
     private long packetsReceived;
     private long bytesSent;
@@ -527,6 +561,7 @@ internal class CollaborationSessionImplementation
         EditorApplication.update += Update;
         AssemblyReloadEvents.beforeAssemblyReload += Close;
         EditorApplication.quitting += Close;
+        Selection.selectionChanged += OnLocalSelectionChanged;
         EditorApplication.delayCall += InitializeEditorState;
     }
 
@@ -694,6 +729,10 @@ internal class CollaborationSessionImplementation
         foreach (Peer peer in peers.Values)
             try { peer.Socket.Abort(); peer.Socket.Dispose(); peer.Transport?.Dispose(); } catch { }
         peers.Clear();
+        RestoreLockedObjects();
+        selectionOwners.Clear();
+        componentStates.Clear();
+        localSelectionId = null;
         try
         {
             if (cloudflared != null && !cloudflared.HasExited)
@@ -739,6 +778,9 @@ internal class CollaborationSessionImplementation
         PingMs = host ? 0 : -1;
         packetsSent = packetsReceived = bytesSent = bytesReceived = 0;
         transformStates.Clear();
+        componentStates.Clear();
+        selectionOwners.Clear();
+        localSelectionId = null;
         transformSnapshotReady = false;
     }
 
@@ -768,6 +810,7 @@ internal class CollaborationSessionImplementation
             cameraPoseDirty = false;
         }
         if (now - lastTransformScan > 0.1d) { lastTransformScan = now; PublishChangedTransforms(); }
+        if (now - lastPropertyScan > 0.1d) { lastPropertyScan = now; PublishSelectedProperties(); }
         if (!IsHost && now - lastPingSend > 1.0)
         {
             lastPingSend = now;
@@ -848,6 +891,8 @@ internal class CollaborationSessionImplementation
                         Changed?.Invoke();
                     });
                 }
+                else if (message.type == "select_request")
+                    HandleSelectionRequest(peer.Id, peer.Name, message.objectId);
                 else
                 {
                     if (message.type == "scene") peer.SceneName = CleanSceneName(message.scene);
@@ -868,9 +913,11 @@ internal class CollaborationSessionImplementation
             {
                 mainThread.Enqueue(() =>
                 {
+                    ApplySelection(peer.Id, "");
                     players.RemoveAll(item => item.Id == peer.Id);
                     Changed?.Invoke();
                 });
+                _ = Broadcast(new CollaborationMessage { type = "selection", id = peer.Id, objectId = "" });
                 BroadcastRoster();
             }
             try { peer.Socket.Dispose(); } catch { }
@@ -922,6 +969,13 @@ internal class CollaborationSessionImplementation
                 SceneView.RepaintAll();
             }
             else if (message.type == "transform") ApplyRemoteTransform(message);
+            else if (message.type == "property") ApplyRemoteProperty(message);
+            else if (message.type == "selection") ApplySelection(message.id, message.objectId);
+            else if (message.type == "selection_denied")
+            {
+                Selection.activeObject = null;
+                Error = string.IsNullOrEmpty(message.text) ? "That object is being edited by another player." : message.text;
+            }
             else if (message.type == "roster")
             {
                 HashSet<string> current = new HashSet<string>(message.ids ?? Array.Empty<string>());
@@ -930,7 +984,12 @@ internal class CollaborationSessionImplementation
                 {
                     CollaborationPlayer player = AddOrUpdatePlayer(message.ids[i], message.names[i], i == 0);
                     if (i < (message.scenes?.Length ?? 0)) player.SceneName = CleanSceneName(message.scenes[i]);
+                    if (i < (message.selections?.Length ?? 0)) player.SelectedObjectId = message.selections[i] ?? "";
                 }
+                selectionOwners.Clear();
+                foreach (CollaborationPlayer player in players)
+                    if (!string.IsNullOrEmpty(player.SelectedObjectId)) selectionOwners[player.SelectedObjectId] = player.Id;
+                RefreshObjectLocks();
             }
             else if (message.type == "scene")
                 AddOrUpdatePlayer(message.id, message.name, message.id == LocalId && IsHost).SceneName = CleanSceneName(message.scene);
@@ -948,7 +1007,9 @@ internal class CollaborationSessionImplementation
             type = "roster",
             ids = new[] { LocalId }.Concat(connected.Select(peer => peer.Id)).ToArray(),
             names = new[] { localName }.Concat(connected.Select(peer => peer.Name)).ToArray(),
-            scenes = new[] { GetActiveSceneName() }.Concat(connected.Select(peer => CleanSceneName(peer.SceneName))).ToArray()
+            scenes = new[] { GetActiveSceneName() }.Concat(connected.Select(peer => CleanSceneName(peer.SceneName))).ToArray(),
+            selections = new[] { players.FirstOrDefault(player => player.Id == LocalId)?.SelectedObjectId ?? "" }
+                .Concat(connected.Select(peer => players.FirstOrDefault(player => player.Id == peer.Id)?.SelectedObjectId ?? "")).ToArray()
         };
         _ = Broadcast(roster);
         mainThread.Enqueue(() =>
@@ -1130,6 +1191,8 @@ internal class CollaborationSessionImplementation
         {
             if (!transform.gameObject.scene.IsValid() || !transform.gameObject.scene.isLoaded) continue;
             string id = GlobalObjectId.GetGlobalObjectIdSlow(transform).ToString();
+            string gameObjectId = GlobalObjectId.GetGlobalObjectIdSlow(transform.gameObject).ToString();
+            if (IsLockedByOther(gameObjectId)) continue;
             string state = TransformState(transform);
             if (transformStates.TryGetValue(id, out string previous) && previous == state) continue;
             transformStates[id] = state;
@@ -1137,7 +1200,7 @@ internal class CollaborationSessionImplementation
             Vector3 p = transform.localPosition;
             Quaternion r = transform.localRotation;
             Vector3 s = transform.localScale;
-            SendProjectMessage(new CollaborationMessage { type = "transform", id = LocalId, objectId = id,
+            SendProjectMessage(new CollaborationMessage { type = "transform", id = LocalId, objectId = gameObjectId, componentId = id,
                 x = p.x, y = p.y, z = p.z, qx = r.x, qy = r.y, qz = r.z, qw = r.w,
                 sx = s.x, sy = s.y, sz = s.z });
         }
@@ -1146,8 +1209,9 @@ internal class CollaborationSessionImplementation
 
     private void ApplyRemoteTransform(CollaborationMessage message)
     {
-        if (string.IsNullOrEmpty(message.objectId) ||
-            !GlobalObjectId.TryParse(message.objectId, out GlobalObjectId globalId)) return;
+        string transformId = string.IsNullOrEmpty(message.componentId) ? message.objectId : message.componentId;
+        if (string.IsNullOrEmpty(transformId) ||
+            !GlobalObjectId.TryParse(transformId, out GlobalObjectId globalId)) return;
         Transform transform = GlobalObjectId.GlobalObjectIdentifierToObjectSlow(globalId) as Transform;
         if (transform == null) return;
         applyingRemoteTransform = true;
@@ -1157,7 +1221,7 @@ internal class CollaborationSessionImplementation
             transform.localRotation = new Quaternion(message.qx, message.qy, message.qz, message.qw);
             transform.localScale = new Vector3(message.sx, message.sy, message.sz);
             EditorUtility.SetDirty(transform);
-            transformStates[message.objectId] = TransformState(transform);
+            transformStates[transformId] = TransformState(transform);
             SceneView.RepaintAll();
         }
         finally { applyingRemoteTransform = false; }
@@ -1169,6 +1233,125 @@ internal class CollaborationSessionImplementation
         Quaternion r = transform.localRotation;
         Vector3 s = transform.localScale;
         return p.x + "," + p.y + "," + p.z + "|" + r.x + "," + r.y + "," + r.z + "," + r.w + "|" + s.x + "," + s.y + "," + s.z;
+    }
+
+    private void OnLocalSelectionChanged()
+    {
+        if (!Connected) return;
+        GameObject selected = Selection.activeGameObject;
+        string requested = selected == null ? "" : GlobalObjectId.GetGlobalObjectIdSlow(selected).ToString();
+        if (requested == localSelectionId) return;
+        if (!string.IsNullOrEmpty(requested) && IsLockedByOther(requested)) requested = "";
+        if (IsHost) HandleSelectionRequest(LocalId, localName, requested);
+        else _ = SendClient(new CollaborationMessage { type = "select_request", id = LocalId, name = localName, objectId = requested });
+    }
+
+    private void HandleSelectionRequest(string playerId, string playerName, string requestedId)
+    {
+        mainThread.Enqueue(() =>
+        {
+            requestedId = requestedId ?? "";
+            if (!string.IsNullOrEmpty(requestedId) && selectionOwners.TryGetValue(requestedId, out string owner) && owner != playerId)
+            {
+                if (peers.TryGetValue(playerId, out Peer deniedPeer))
+                    _ = Send(deniedPeer.Socket, deniedPeer.SendLock, new CollaborationMessage { type = "selection_denied", text = "That object is being edited by another player." });
+                return;
+            }
+            CollaborationMessage selection = new CollaborationMessage { type = "selection", id = playerId, name = playerName, objectId = requestedId };
+            ApplySelection(playerId, requestedId);
+            _ = Broadcast(selection);
+        });
+    }
+
+    private void ApplySelection(string playerId, string objectId)
+    {
+        foreach (string oldId in selectionOwners.Where(pair => pair.Value == playerId).Select(pair => pair.Key).ToArray())
+            selectionOwners.Remove(oldId);
+        objectId = objectId ?? "";
+        if (!string.IsNullOrEmpty(objectId)) selectionOwners[objectId] = playerId;
+        CollaborationPlayer player = players.FirstOrDefault(item => item.Id == playerId);
+        if (player != null) player.SelectedObjectId = objectId;
+        if (playerId == LocalId) localSelectionId = objectId;
+        RefreshObjectLocks();
+        SceneView.RepaintAll();
+        Changed?.Invoke();
+    }
+
+    private bool IsLockedByOther(string objectId)
+    {
+        return !string.IsNullOrEmpty(objectId) && selectionOwners.TryGetValue(objectId, out string owner) && owner != LocalId;
+    }
+
+    public GameObject ResolveGameObject(string objectId)
+    {
+        if (string.IsNullOrEmpty(objectId) || !GlobalObjectId.TryParse(objectId, out GlobalObjectId id)) return null;
+        UnityEngine.Object target = GlobalObjectId.GlobalObjectIdentifierToObjectSlow(id);
+        GameObject gameObject = target as GameObject;
+        Component component = target as Component;
+        return gameObject != null ? gameObject : component != null ? component.gameObject : null;
+    }
+
+    private void RefreshObjectLocks()
+    {
+        RestoreLockedObjects();
+        foreach (KeyValuePair<string, string> pair in selectionOwners)
+        {
+            if (pair.Value == LocalId) continue;
+            GameObject target = ResolveGameObject(pair.Key);
+            if (target == null) continue;
+            SetNotEditable(target);
+            foreach (Component component in target.GetComponents<Component>()) SetNotEditable(component);
+        }
+        ActiveEditorTracker.sharedTracker.ForceRebuild();
+    }
+
+    private void SetNotEditable(UnityEngine.Object target)
+    {
+        if (target == null || lockedObjectFlags.ContainsKey(target)) return;
+        lockedObjectFlags[target] = target.hideFlags;
+        target.hideFlags |= HideFlags.NotEditable;
+    }
+
+    private void RestoreLockedObjects()
+    {
+        foreach (KeyValuePair<UnityEngine.Object, HideFlags> pair in lockedObjectFlags)
+            if (pair.Key != null) pair.Key.hideFlags = pair.Value;
+        lockedObjectFlags.Clear();
+    }
+
+    private void PublishSelectedProperties()
+    {
+        if (!Connected || applyingRemoteProperty || string.IsNullOrEmpty(localSelectionId)) return;
+        GameObject target = ResolveGameObject(localSelectionId);
+        if (target == null) return;
+        UnityEngine.Object[] objects = target.GetComponents<Component>().Cast<UnityEngine.Object>().ToArray();
+        foreach (UnityEngine.Object component in objects)
+        {
+            if (component == null || component is Transform) continue;
+            string componentId = GlobalObjectId.GetGlobalObjectIdSlow(component).ToString();
+            string json = EditorJsonUtility.ToJson(component);
+            if (componentStates.TryGetValue(componentId, out string oldJson) && oldJson == json) continue;
+            componentStates[componentId] = json;
+            SendProjectMessage(new CollaborationMessage { type = "property", id = LocalId, objectId = localSelectionId, componentId = componentId, data = json });
+        }
+    }
+
+    private void ApplyRemoteProperty(CollaborationMessage message)
+    {
+        if (string.IsNullOrEmpty(message.componentId) || !GlobalObjectId.TryParse(message.componentId, out GlobalObjectId id)) return;
+        UnityEngine.Object target = GlobalObjectId.GlobalObjectIdentifierToObjectSlow(id);
+        if (target == null || target is Transform) return;
+        applyingRemoteProperty = true;
+        try
+        {
+            HideFlags flags = target.hideFlags;
+            EditorJsonUtility.FromJsonOverwrite(message.data ?? "{}", target);
+            target.hideFlags = flags;
+            EditorUtility.SetDirty(target);
+            componentStates[message.componentId] = EditorJsonUtility.ToJson(target);
+            SceneView.RepaintAll();
+        }
+        finally { applyingRemoteProperty = false; }
     }
 
     public void CheckForUpdatesNow()

@@ -10,5 +10,6 @@ internal sealed class CollaborationPlayer
     public Vector3 CameraPosition;
     public Quaternion CameraRotation = Quaternion.identity;
     public bool HasCameraPose;
+    public string SelectedObjectId;
     public Color Color;
 }
