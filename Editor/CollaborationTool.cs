@@ -202,6 +202,12 @@ public sealed class CollaborationTool : EditorWindow
 
     private void DrawSession()
     {
+        if (Session.Connecting)
+        {
+            EditorGUILayout.HelpBox(Session.Status, MessageType.Info);
+            GUILayout.Space(6f);
+        }
+
         if (Session.IsHost && !string.IsNullOrEmpty(Session.ShareLink))
         {
             using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
@@ -464,9 +470,31 @@ internal sealed class CollaborationSession
         try
         {
             cancellation = new CancellationTokenSource();
-            client = new ClientWebSocket();
             Uri uri = MakeWebSocketUri(link);
-            await client.ConnectAsync(uri, cancellation.Token);
+            Exception lastError = null;
+            for (int attempt = 1; attempt <= 6; attempt++)
+            {
+                try
+                {
+                    client?.Dispose();
+                    client = new ClientWebSocket();
+                    Status = attempt == 1 ? "Connecting…" : "Waiting for server… (" + attempt + "/6)";
+                    Changed?.Invoke();
+                    await client.ConnectAsync(uri, cancellation.Token);
+                    lastError = null;
+                    break;
+                }
+                catch (Exception exception) when (!(exception is OperationCanceledException))
+                {
+                    lastError = exception;
+                    client?.Dispose();
+                    client = null;
+                    if (attempt < 6) await Task.Delay(1500, cancellation.Token);
+                }
+            }
+            if (lastError != null)
+                throw new InvalidOperationException("The server did not respond. Check that the host still has the server open and use its newest link.", lastError);
+
             Connected = true;
             Connecting = false;
             _ = ClientReceiveLoop(cancellation.Token);
