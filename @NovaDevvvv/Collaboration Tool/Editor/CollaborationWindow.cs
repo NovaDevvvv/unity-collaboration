@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.WebSockets;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -463,6 +464,7 @@ internal class CollaborationSessionImplementation
         public string Name;
         public string SceneName;
         public WebSocket Socket;
+        public TcpClient Transport;
         public readonly SemaphoreSlim SendLock = new SemaphoreSlim(1, 1);
         public int Ping = -1;
     }
@@ -473,7 +475,7 @@ internal class CollaborationSessionImplementation
     private readonly List<CollaborationPlayer> players = new List<CollaborationPlayer>();
     private readonly List<string> chat = new List<string>();
     private CancellationTokenSource cancellation;
-    private HttpListener listener;
+    private TcpListener listener;
     private ClientWebSocket client;
     private Process cloudflared;
     private Process backupTunnel;
@@ -567,8 +569,7 @@ internal class CollaborationSessionImplementation
         {
             int port = FindFreePort();
             cancellation = new CancellationTokenSource();
-            listener = new HttpListener();
-            listener.Prefixes.Add("http://127.0.0.1:" + port + "/");
+            listener = new TcpListener(IPAddress.Loopback, port);
             listener.Start();
             ConnectionDetail = "Local server started. Creating a secure share link…";
             _ = AcceptLoop(cancellation.Token);
@@ -694,10 +695,10 @@ internal class CollaborationSessionImplementation
         Connected = false;
         Connecting = false;
         try { cancellation?.Cancel(); } catch { }
-        try { listener?.Stop(); listener?.Close(); } catch { }
+        try { listener?.Stop(); } catch { }
         try { client?.Abort(); client?.Dispose(); } catch { }
         foreach (Peer peer in peers.Values)
-            try { peer.Socket.Abort(); peer.Socket.Dispose(); } catch { }
+            try { peer.Socket.Abort(); peer.Socket.Dispose(); peer.Transport?.Dispose(); } catch { }
         peers.Clear();
         try
         {
@@ -793,16 +794,10 @@ internal class CollaborationSessionImplementation
         {
             try
             {
-                HttpListenerContext context = await listener.GetContextAsync();
-                if (!context.Request.IsWebSocketRequest || context.Request.Url.AbsolutePath != "/collaboration/")
-                {
-                    context.Response.StatusCode = 400;
-                    context.Response.Headers["X-Collaboration-Server"] = "true";
-                    context.Response.Close();
-                    continue;
-                }
-                HttpListenerWebSocketContext webSocket = await context.AcceptWebSocketAsync(null);
-                Peer peer = new Peer { Id = Guid.NewGuid().ToString("N"), Socket = webSocket.WebSocket };
+                TcpClient connection = await listener.AcceptTcpClientAsync();
+                WebSocket socket = await CollaborationServer.AcceptWebSocket(connection, token);
+                if (socket == null) { connection.Dispose(); continue; }
+                Peer peer = new Peer { Id = Guid.NewGuid().ToString("N"), Socket = socket, Transport = connection };
                 _ = PeerReceiveLoop(peer, token);
             }
             catch (Exception exception)
@@ -871,6 +866,7 @@ internal class CollaborationSessionImplementation
                 BroadcastRoster();
             }
             try { peer.Socket.Dispose(); } catch { }
+            try { peer.Transport?.Dispose(); } catch { }
         }
     }
 
@@ -1406,8 +1402,7 @@ internal class CollaborationSessionImplementation
         ProcessStartInfo info = new ProcessStartInfo
         {
             FileName = "cloudflared",
-            // HttpListener is registered specifically for 127.0.0.1. Override the
-            // forwarded public Host header so Windows routes the request to it.
+            // Keep the forwarded origin explicitly on the loopback listener.
             // Use an isolated empty configuration so a user's named-tunnel config
             // cannot prevent Quick Tunnel mode from generating a random link.
             Arguments = "--config \"" + isolatedConfig + "\" tunnel --no-autoupdate --url http://127.0.0.1:" + port +
