@@ -174,7 +174,10 @@ public sealed class CollaborationTool : EditorWindow
             hover = { background = SolidTexture(new Color32(52, 58, 68, 255)), textColor = Color.white },
             alignment = TextAnchor.MiddleCenter,
             padding = new RectOffset(12, 12, 4, 4),
-            border = new RectOffset(0, 0, 0, 0)
+            border = new RectOffset(0, 0, 0, 0),
+            contentOffset = Vector2.zero,
+            fixedHeight = 0f,
+            stretchHeight = true
         };
         leaveStyle = new GUIStyle(flatButtonStyle)
         {
