@@ -667,6 +667,7 @@ internal class CollaborationSessionImplementation
     private readonly Dictionary<string, string> transformObjectIds = new Dictionary<string, string>();
     private readonly Dictionary<string, string> componentStates = new Dictionary<string, string>();
     private readonly Dictionary<string, UnityEngine.Object> remoteObjects = new Dictionary<string, UnityEngine.Object>();
+    private readonly Dictionary<string, byte[]> remoteAssetBackups = new Dictionary<string, byte[]>();
     private readonly Dictionary<UnityEngine.Object, HideFlags> lockedObjectFlags = new Dictionary<UnityEngine.Object, HideFlags>();
     private readonly Dictionary<string, string> selectionOwners = new Dictionary<string, string>();
     private bool applyingRemoteTransform;
@@ -753,6 +754,7 @@ internal class CollaborationSessionImplementation
     public async void Create(string name)
     {
         Close();
+        RestoreRemoteAssets();
         Reset(name, true);
         Connecting = true;
         Status = "Creating server…";
@@ -784,6 +786,7 @@ internal class CollaborationSessionImplementation
     public async void Join(string name, string link)
     {
         Close();
+        RestoreRemoteAssets();
         Reset(name, false);
         Connecting = true;
         Status = "Connecting…";
@@ -958,6 +961,7 @@ internal class CollaborationSessionImplementation
     {
         Close();
         EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+        RestoreRemoteAssets();
         return true;
     }
 
@@ -1190,6 +1194,7 @@ internal class CollaborationSessionImplementation
                         Error = reason;
                         Changed?.Invoke();
                         EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+                        RestoreRemoteAssets();
                     });
                     return;
                 }
@@ -1454,6 +1459,8 @@ internal class CollaborationSessionImplementation
             string absolutePath = ToAbsolutePath(path);
             if (message.type == "file")
             {
+                if (!IsHost && !remoteAssetBackups.ContainsKey(path))
+                    remoteAssetBackups[path] = File.Exists(absolutePath) ? File.ReadAllBytes(absolutePath) : null;
                 string directory = Path.GetDirectoryName(absolutePath);
                 if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
                 File.WriteAllBytes(absolutePath, Convert.FromBase64String(message.data ?? ""));
@@ -1476,6 +1483,53 @@ internal class CollaborationSessionImplementation
         catch (Exception exception)
         {
             Error = "Could not apply remote change to " + message.path + ": " + exception.Message;
+        }
+    }
+
+    private void RestoreRemoteAssets()
+    {
+        if (IsHost || remoteAssetBackups.Count == 0) return;
+        HashSet<string> candidateDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        AssetDatabase.DisallowAutoRefresh();
+        try
+        {
+            foreach (KeyValuePair<string, byte[]> entry in remoteAssetBackups.OrderByDescending(item => item.Key.Length))
+            {
+                if (!IsSafeProjectPath(entry.Key)) continue;
+                string absolutePath = ToAbsolutePath(entry.Key);
+                string directory = Path.GetDirectoryName(absolutePath);
+                if (!string.IsNullOrEmpty(directory)) candidateDirectories.Add(directory);
+                if (entry.Value != null)
+                {
+                    Directory.CreateDirectory(directory);
+                    File.WriteAllBytes(absolutePath, entry.Value);
+                }
+                else if (File.Exists(absolutePath))
+                    File.Delete(absolutePath);
+            }
+
+            string assetsRoot = Path.GetFullPath(Application.dataPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            foreach (string directory in candidateDirectories.OrderByDescending(path => path.Length))
+            {
+                string current = directory;
+                while (!string.IsNullOrEmpty(current) &&
+                       current.StartsWith(assetsRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) &&
+                       Directory.Exists(current) && !Directory.EnumerateFileSystemEntries(current).Any())
+                {
+                    Directory.Delete(current);
+                    current = Path.GetDirectoryName(current);
+                }
+            }
+        }
+        catch (Exception exception)
+        {
+            Debug.LogWarning("Collaboration: could not completely clean up received assets: " + exception.Message);
+        }
+        finally
+        {
+            AssetDatabase.AllowAutoRefresh();
+            remoteAssetBackups.Clear();
+            AssetDatabase.Refresh(ImportAssetOptions.ForceUpdate);
         }
     }
 
