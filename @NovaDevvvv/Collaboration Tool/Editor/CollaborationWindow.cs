@@ -129,7 +129,9 @@ public sealed class CollaborationTool : EditorWindow
 
     private void EnsureStyles()
     {
-        if (titleStyle != null) return;
+        if (titleStyle != null && panelStyle != null && tabStyle != null && tabActiveStyle != null &&
+            tabContainerStyle != null && leaveStyle != null && fieldStyle != null && flatButtonStyle != null &&
+            chatPanelStyle != null) return;
         titleStyle = CollaborationStyles.Title();
         subtitleStyle = new GUIStyle(EditorStyles.label)
         {
@@ -619,6 +621,7 @@ internal class CollaborationSessionImplementation
     private int serverLinkAttempt;
     private bool validatingServerLink;
     private bool backupLinkAttempted;
+    private int backupLinkAttempt;
     private string localName;
     private string lastLocalScene;
     private double lastPresenceSend;
@@ -897,6 +900,7 @@ internal class CollaborationSessionImplementation
         serverLinkAttempt = 0;
         validatingServerLink = false;
         backupLinkAttempted = false;
+        backupLinkAttempt = 0;
         if (wasConnected) Changed?.Invoke();
     }
 
@@ -1923,7 +1927,8 @@ internal class CollaborationSessionImplementation
     private void StartBackupTunnel(int port, CancellationToken token)
     {
         backupLinkAttempted = true;
-        ConnectionDetail = "Creating server link...";
+        backupLinkAttempt++;
+        ConnectionDetail = "Creating server link... (LHR attempt " + backupLinkAttempt + " of 3)";
         Changed?.Invoke();
         int proxyPort = FindFreePort();
         ProcessStartInfo info = new ProcessStartInfo
@@ -1968,10 +1973,16 @@ internal class CollaborationSessionImplementation
             try { process.Dispose(); } catch { }
             backupTunnel = null;
             serverServiceDetail = "";
-            serverLinkAttempt = 0;
-            ConnectionDetail = "Trying another server service...";
+            ConnectionDetail = backupLinkAttempt < 3
+                ? "LHR did not return a link. Retrying..."
+                : "Trying another server service...";
             Changed?.Invoke();
-            StartCloudflared(port);
+            if (backupLinkAttempt < 3) _ = RetryBackupTunnel(port, token);
+            else
+            {
+                serverLinkAttempt = 0;
+                StartCloudflared(port);
+            }
         });
         try
         {
@@ -1986,11 +1997,31 @@ internal class CollaborationSessionImplementation
         {
             try { backupProxy?.Dispose(); } catch { }
             backupProxy = null;
+            try { process.Dispose(); } catch { }
+            backupTunnel = null;
             serverServiceDetail = SanitizeServiceMessage(DescribeException(exception));
-            ConnectionDetail = "Trying another server service...";
+            ConnectionDetail = backupLinkAttempt < 3
+                ? "LHR could not start. Retrying..."
+                : "Trying another server service...";
             Changed?.Invoke();
-            StartCloudflared(port);
+            if (backupLinkAttempt < 3) _ = RetryBackupTunnel(port, token);
+            else
+            {
+                serverLinkAttempt = 0;
+                StartCloudflared(port);
+            }
         }
+    }
+
+    private async Task RetryBackupTunnel(int port, CancellationToken token)
+    {
+        try { await Task.Delay(1500, token); }
+        catch (OperationCanceledException) { return; }
+        mainThread.Enqueue(() =>
+        {
+            if (token.IsCancellationRequested || !Connected || !string.IsNullOrEmpty(ShareLink)) return;
+            StartBackupTunnel(port, token);
+        });
     }
 
     private async Task ValidateBackupServerLink(string link, Process process, CancellationToken token)
