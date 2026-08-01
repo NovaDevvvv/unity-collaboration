@@ -956,7 +956,6 @@ internal class CollaborationSessionImplementation
 
     public bool LeaveAndOpenEmptyScene()
     {
-        if (!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()) return false;
         Close();
         EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
         return true;
@@ -1190,8 +1189,7 @@ internal class CollaborationSessionImplementation
                         Close();
                         Error = reason;
                         Changed?.Invoke();
-                        if (EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo())
-                            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+                        EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
                     });
                     return;
                 }
@@ -1501,7 +1499,7 @@ internal class CollaborationSessionImplementation
         }
         Scene current = SceneManager.GetActiveScene();
         if (string.Equals(NormalizePath(current.path), scenePath, StringComparison.OrdinalIgnoreCase)) return;
-        if (!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()) return;
+        if (IsHost && !EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()) return;
         EditorSceneManager.OpenScene(scenePath, OpenSceneMode.Single);
     }
 
