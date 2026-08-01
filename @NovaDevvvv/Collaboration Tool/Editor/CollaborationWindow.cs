@@ -364,6 +364,7 @@ public sealed class CollaborationTool : EditorWindow
             {
                 if (GUILayout.Button(page == Page.Create ? "Create Server" : "Join Server", GUILayout.Height(34f)))
                 {
+                    sessionTab = 0;
                     if (page == Page.Create)
                         Session.Create(playerName.Trim());
                     else
@@ -967,7 +968,6 @@ internal class CollaborationSessionImplementation
         finally
         {
             Close();
-            EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
             endingSession = false;
         }
     }
@@ -1002,7 +1002,7 @@ internal class CollaborationSessionImplementation
         if (!string.Equals(activeScene, lastLocalScene, StringComparison.Ordinal))
             PublishLocalScene(activeScene);
 
-        if (cameraPoseDirty && now - lastPresenceSend > 0.1d)
+        if (cameraPoseDirty && now - lastPresenceSend > 0.05d)
         {
             lastPresenceSend = now;
             CollaborationMessage presence = new CollaborationMessage
@@ -1015,7 +1015,7 @@ internal class CollaborationSessionImplementation
             if (IsHost) _ = Broadcast(presence); else _ = SendClient(presence);
             cameraPoseDirty = false;
         }
-        if (now - lastTransformScan > 0.1d) { lastTransformScan = now; PublishChangedTransforms(); }
+        if (now - lastTransformScan > 0.05d) { lastTransformScan = now; PublishChangedTransforms(); }
         if (now - lastPropertyScan > 0.1d) { lastPropertyScan = now; PublishSelectedProperties(); }
         if (!IsHost && now - lastPingSend > 1.0)
         {
@@ -1253,11 +1253,17 @@ internal class CollaborationSessionImplementation
 
     private async Task Broadcast(CollaborationMessage message, string exceptId = null)
     {
-        foreach (Peer peer in peers.Values.ToArray())
-        {
-            if (peer.Id == exceptId || peer.Socket.State != WebSocketState.Open) continue;
-            try { await Send(peer.Socket, peer.SendLock, message); } catch { }
-        }
+        Task[] sends = peers.Values
+            .Where(peer => peer.Id != exceptId && peer.Socket.State == WebSocketState.Open)
+            .Select(peer => SendIgnoringDisconnect(peer, message))
+            .ToArray();
+        if (sends.Length > 0) await Task.WhenAll(sends);
+    }
+
+    private async Task SendIgnoringDisconnect(Peer peer, CollaborationMessage message)
+    {
+        try { await Send(peer.Socket, peer.SendLock, message); }
+        catch { }
     }
 
     private Task SendClient(CollaborationMessage message)
