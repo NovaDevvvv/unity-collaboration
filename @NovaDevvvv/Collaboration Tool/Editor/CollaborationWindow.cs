@@ -1361,7 +1361,17 @@ internal class CollaborationSessionImplementation
 
     private void OnSceneSaved(Scene scene)
     {
-        if (Connected && !string.IsNullOrEmpty(scene.path)) PublishImportedAsset(scene.path);
+        string savedPath = NormalizePath(scene.path);
+        if (!Connected || !IsSafeScenePath(savedPath)) return;
+        EditorApplication.delayCall += () => PublishSavedScene(savedPath);
+    }
+
+    private void PublishSavedScene(string scenePath)
+    {
+        if (!Connected || !IsSafeScenePath(scenePath)) return;
+        string metaPath = scenePath + ".meta";
+        if (File.Exists(ToAbsolutePath(metaPath))) SendProjectFile(metaPath);
+        SendProjectFile(scenePath);
     }
 
     public void PublishDeletedAsset(string assetPath)
@@ -1402,31 +1412,6 @@ internal class CollaborationSessionImplementation
         catch (Exception exception) { QueueError("Could not sync " + projectPath + ": " + exception.Message); }
     }
 
-    private CollaborationMessage CreateProjectFileMessage(string projectPath)
-    {
-        string normalized = NormalizePath(projectPath);
-        string absolutePath = ToAbsolutePath(normalized);
-        if (!File.Exists(absolutePath) || new FileInfo(absolutePath).Length > MaxSyncedFileBytes) return null;
-        return new CollaborationMessage
-        {
-            type = "file", id = LocalId, path = normalized,
-            data = Convert.ToBase64String(File.ReadAllBytes(absolutePath))
-        };
-    }
-
-    private async Task SendSceneToPeer(Peer peer, string scenePath)
-    {
-        try
-        {
-            CollaborationMessage meta = CreateProjectFileMessage(scenePath + ".meta");
-            CollaborationMessage scene = CreateProjectFileMessage(scenePath);
-            if (meta != null) await Send(peer.Socket, peer.SendLock, meta);
-            if (scene == null) return;
-            await Send(peer.Socket, peer.SendLock, scene);
-        }
-        catch { }
-    }
-
     private async Task SendAssetSnapshotToPeer(Peer peer)
     {
         try
@@ -1447,11 +1432,6 @@ internal class CollaborationSessionImplementation
                 .ToArray();
             foreach (string path in files)
                 await SendFileToPeer(peer, path);
-            await Send(peer.Socket, peer.SendLock, new CollaborationMessage
-            {
-                type = "scene_open", id = LocalId, name = localName,
-                scene = Path.GetFileNameWithoutExtension(scenePath), path = NormalizePath(scenePath)
-            });
         }
         catch (Exception exception)
         {
@@ -1633,22 +1613,6 @@ internal class CollaborationSessionImplementation
         return normalized.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase) &&
                normalized.EndsWith(".unity", StringComparison.OrdinalIgnoreCase) &&
                !normalized.Contains("../");
-    }
-
-    private void ApplyRemoteSceneOpen(CollaborationMessage message)
-    {
-        if (message.type == "scene_open_request" && !IsHost) return;
-        if (!IsSafeScenePath(message.path)) return;
-        string scenePath = NormalizePath(message.path);
-        if (AssetDatabase.LoadAssetAtPath<SceneAsset>(scenePath) == null)
-        {
-            Error = "Could not open " + scenePath + " because it has not synced to this project yet.";
-            return;
-        }
-        Scene current = SceneManager.GetActiveScene();
-        if (string.Equals(NormalizePath(current.path), scenePath, StringComparison.OrdinalIgnoreCase)) return;
-        if (IsHost && !EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()) return;
-        EditorSceneManager.OpenScene(scenePath, OpenSceneMode.Single);
     }
 
     private void PublishChangedTransforms()
