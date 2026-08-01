@@ -70,8 +70,6 @@ public sealed class CollaborationTool : EditorWindow
         SceneView.duringSceneGui += OnSceneGUI;
         EditorApplication.hierarchyWindowItemOnGUI -= OnHierarchyItemGUI;
         EditorApplication.hierarchyWindowItemOnGUI += OnHierarchyItemGUI;
-        EditorApplication.globalEventHandler -= OnGlobalEditorEvent;
-        EditorApplication.globalEventHandler += OnGlobalEditorEvent;
         if (Session.Connected)
             page = Page.Session;
     }
@@ -80,10 +78,12 @@ public sealed class CollaborationTool : EditorWindow
     {
         Session.Changed -= Repaint;
         SceneView.duringSceneGui -= OnSceneGUI;
+        EditorApplication.hierarchyWindowItemOnGUI -= OnHierarchyItemGUI;
     }
 
     private void OnGUI()
     {
+        OnGlobalEditorEvent();
         EnsureStyles();
         EditorGUI.DrawRect(new Rect(0f, 0f, position.width, position.height), WindowBackground);
         if (Session.ShowingUpdateCheck)
@@ -515,6 +515,7 @@ public sealed class CollaborationTool : EditorWindow
 
     private static void OnSceneGUI(SceneView sceneView)
     {
+        OnGlobalEditorEvent();
         if (!Session.Connected) return;
         if (sceneView.camera != null)
             Session.UpdateCameraPose(sceneView.camera.transform.position, sceneView.camera.transform.rotation);
@@ -560,6 +561,7 @@ public sealed class CollaborationTool : EditorWindow
 
     private static void OnHierarchyItemGUI(int instanceId, Rect rect)
     {
+        OnGlobalEditorEvent();
         if (!Session.Connected || !Session.TryGetSelectionColor(instanceId, out Color color)) return;
         Rect marker = new Rect(rect.xMax - 10f, rect.y + (rect.height - 7f) * 0.5f, 7f, 7f);
         EditorGUI.DrawRect(marker, color);
@@ -1380,7 +1382,12 @@ internal class CollaborationSessionImplementation
     {
         if (!Connected || applyingRemoteTransform) return;
         bool publish = transformSnapshotReady;
-        foreach (Transform transform in UnityEngine.Object.FindObjectsOfType<Transform>())
+#if UNITY_2022_2_OR_NEWER
+        Transform[] transforms = UnityEngine.Object.FindObjectsByType<Transform>(FindObjectsSortMode.None);
+#else
+        Transform[] transforms = UnityEngine.Object.FindObjectsOfType<Transform>();
+#endif
+        foreach (Transform transform in transforms)
         {
             if (!transform.gameObject.scene.IsValid() || !transform.gameObject.scene.isLoaded) continue;
             string id = GlobalObjectId.GetGlobalObjectIdSlow(transform).ToString();
