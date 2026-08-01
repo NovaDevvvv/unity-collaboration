@@ -33,7 +33,7 @@ Runtime scripts and editor assemblies are deliberately excluded from session ass
 
 ## Installation
 
-1. Download [`Installer/UnityCollaborationTool.unitypackage`](Installer/UnityCollaborationTool.unitypackage).
+1. Download [`Installer/UnityCollaborationTool.unitypackage`](https://github.com/NovaDevvvv/unity-collaboration/releases/download/Main/UnityCollaborationTool.unitypackage).
 2. Import the package into the Unity project.
 3. In Unity, select **ATTENTION NEEDED > Install Collaboration Tool**.
 4. Wait for the installer to download the current tool into:
