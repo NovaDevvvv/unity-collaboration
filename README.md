@@ -48,6 +48,8 @@ The installer requires access to GitHub. A DNS error such as `NameResolutionFail
 
 ## Starting a session
 
+![Hosting workflow: create a server, share the link, and join from another Unity Editor](https://github.com/user-attachments/assets/a57afbf0-2dc4-4043-9a5c-df72aab46a7d)
+
 ### Host
 
 1. Open **Collaborate > Window**.
