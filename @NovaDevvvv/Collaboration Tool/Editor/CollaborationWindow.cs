@@ -623,6 +623,7 @@ internal class CollaborationSessionImplementation
     private const string GitHubPatKey = CollaborationSettings.GitHubPatKey;
     private const double UpdateCheckInterval = 300d;
     private const long MaxSyncedFileBytes = 8L * 1024L * 1024L;
+    private const int FileChunkBytes = 6 * 1024 * 1024;
     private const int MaxMessageBytes = 12 * 1024 * 1024;
 
     private sealed class Peer
@@ -668,6 +669,8 @@ internal class CollaborationSessionImplementation
     private readonly Dictionary<string, string> componentStates = new Dictionary<string, string>();
     private readonly Dictionary<string, UnityEngine.Object> remoteObjects = new Dictionary<string, UnityEngine.Object>();
     private readonly Dictionary<string, byte[]> remoteAssetBackups = new Dictionary<string, byte[]>();
+    private readonly Dictionary<string, string[]> incomingFileChunks = new Dictionary<string, string[]>();
+    private readonly HashSet<string> remoteCreatedDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<UnityEngine.Object, HideFlags> lockedObjectFlags = new Dictionary<UnityEngine.Object, HideFlags>();
     private readonly Dictionary<string, string> selectionOwners = new Dictionary<string, string>();
     private bool applyingRemoteTransform;
@@ -1107,7 +1110,7 @@ internal class CollaborationSessionImplementation
                     peers[peer.Id] = peer;
                     mainThread.Enqueue(() => AddOrUpdatePlayer(peer.Id, peer.Name, false).SceneName = peer.SceneName);
                     string hostScenePath = NormalizePath(SceneManager.GetActiveScene().path);
-                    if (IsSafeScenePath(hostScenePath)) _ = SendSceneToPeer(peer, hostScenePath);
+                    if (IsSafeScenePath(hostScenePath)) _ = SendAssetSnapshotToPeer(peer, hostScenePath);
                     BroadcastRoster();
                     AddChat("Server", peer.Name + " joined.");
                 }
@@ -1257,7 +1260,7 @@ internal class CollaborationSessionImplementation
                 ApplyRemoteSceneOpen(message);
             else if (message.type == "scene_open")
                 ApplyRemoteSceneOpen(message);
-            else if (message.type == "file" || message.type == "delete" || message.type == "move")
+            else if (message.type == "file" || message.type == "file_chunk" || message.type == "folder" || message.type == "delete" || message.type == "move")
                 ApplyRemoteFile(message);
             Changed?.Invoke();
         });
@@ -1437,6 +1440,68 @@ internal class CollaborationSessionImplementation
         catch { }
     }
 
+    private async Task SendAssetSnapshotToPeer(Peer peer, string scenePath)
+    {
+        try
+        {
+            string assetsRoot = Path.GetFullPath(Application.dataPath);
+            string[] directories = Directory.GetDirectories(assetsRoot, "*", SearchOption.AllDirectories)
+                .Select(path => "Assets/" + NormalizePath(path.Substring(assetsRoot.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)))
+                .Where(path => !path.StartsWith("Assets/@NovaDevvvv/Collaboration Tool", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(path => path.Length)
+                .ToArray();
+            foreach (string directory in directories)
+                await Send(peer.Socket, peer.SendLock, new CollaborationMessage { type = "folder", id = LocalId, path = directory });
+            string[] files = Directory.GetFiles(assetsRoot, "*", SearchOption.AllDirectories)
+                .Select(path => "Assets/" + NormalizePath(path.Substring(assetsRoot.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)))
+                .Where(ShouldIncludeInAssetSnapshot)
+                .OrderBy(path => path.EndsWith(".meta", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+                .ThenBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            foreach (string path in files)
+                await SendFileToPeer(peer, path);
+            await Send(peer.Socket, peer.SendLock, new CollaborationMessage
+            {
+                type = "scene_open", id = LocalId, name = localName,
+                scene = Path.GetFileNameWithoutExtension(scenePath), path = NormalizePath(scenePath)
+            });
+        }
+        catch (Exception exception)
+        {
+            QueueError("Could not finish sending the host asset snapshot: " + exception.Message);
+        }
+    }
+
+    private static bool ShouldIncludeInAssetSnapshot(string path)
+    {
+        string normalized = NormalizePath(path);
+        if (normalized.StartsWith("Assets/@NovaDevvvv/Collaboration Tool/", StringComparison.OrdinalIgnoreCase)) return false;
+        string withoutMeta = normalized.EndsWith(".meta", StringComparison.OrdinalIgnoreCase)
+            ? normalized.Substring(0, normalized.Length - 5) : normalized;
+        string extension = Path.GetExtension(withoutMeta);
+        return !new[] { ".cs", ".dll", ".asmdef", ".asmref", ".rsp", ".pdb", ".mdb" }
+            .Contains(extension, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private async Task SendFileToPeer(Peer peer, string projectPath)
+    {
+        byte[] bytes = File.ReadAllBytes(ToAbsolutePath(projectPath));
+        int count = Math.Max(1, (bytes.Length + FileChunkBytes - 1) / FileChunkBytes);
+        for (int index = 0; index < count; index++)
+        {
+            int offset = index * FileChunkBytes;
+            int length = Math.Min(FileChunkBytes, bytes.Length - offset);
+            byte[] chunk = new byte[length];
+            Buffer.BlockCopy(bytes, offset, chunk, 0, length);
+            await Send(peer.Socket, peer.SendLock, new CollaborationMessage
+            {
+                type = count == 1 ? "file" : "file_chunk", id = LocalId,
+                path = NormalizePath(projectPath), chunkIndex = index, chunkCount = count,
+                data = Convert.ToBase64String(chunk)
+            });
+        }
+    }
+
     private void SendProjectMessage(CollaborationMessage message)
     {
         if (!Connected) return;
@@ -1457,6 +1522,33 @@ internal class CollaborationSessionImplementation
             suppressAssetEventsUntil = EditorApplication.timeSinceStartup + 3d;
             string path = NormalizePath(message.path);
             string absolutePath = ToAbsolutePath(path);
+            if (message.type == "folder")
+            {
+                if (!IsHost && !Directory.Exists(absolutePath)) remoteCreatedDirectories.Add(path);
+                Directory.CreateDirectory(absolutePath);
+                return;
+            }
+            if (message.type == "file_chunk")
+            {
+                if (message.chunkCount <= 0 || message.chunkIndex < 0 || message.chunkIndex >= message.chunkCount) return;
+                if (!incomingFileChunks.TryGetValue(path, out string[] chunks) || chunks.Length != message.chunkCount)
+                incomingFileChunks[path] = chunks = new string[message.chunkCount];
+                chunks[message.chunkIndex] = message.data ?? "";
+                if (chunks.Any(chunk => chunk == null)) return;
+                byte[] assembledBytes;
+                using (MemoryStream assembled = new MemoryStream())
+                {
+                    foreach (string chunk in chunks)
+                    {
+                        byte[] bytes = Convert.FromBase64String(chunk);
+                        assembled.Write(bytes, 0, bytes.Length);
+                    }
+                    assembledBytes = assembled.ToArray();
+                }
+                message.data = Convert.ToBase64String(assembledBytes);
+                incomingFileChunks.Remove(path);
+                message.type = "file";
+            }
             if (message.type == "file")
             {
                 if (!IsHost && !remoteAssetBackups.ContainsKey(path))
@@ -1520,6 +1612,12 @@ internal class CollaborationSessionImplementation
                     current = Path.GetDirectoryName(current);
                 }
             }
+            foreach (string directoryPath in remoteCreatedDirectories.OrderByDescending(path => path.Length))
+            {
+                string absoluteDirectory = ToAbsolutePath(directoryPath);
+                if (Directory.Exists(absoluteDirectory) && !Directory.EnumerateFileSystemEntries(absoluteDirectory).Any())
+                    Directory.Delete(absoluteDirectory);
+            }
         }
         catch (Exception exception)
         {
@@ -1529,6 +1627,8 @@ internal class CollaborationSessionImplementation
         {
             AssetDatabase.AllowAutoRefresh();
             remoteAssetBackups.Clear();
+            remoteCreatedDirectories.Clear();
+            incomingFileChunks.Clear();
             AssetDatabase.Refresh(ImportAssetOptions.ForceUpdate);
         }
     }

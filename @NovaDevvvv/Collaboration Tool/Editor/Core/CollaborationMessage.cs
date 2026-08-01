@@ -21,6 +21,8 @@ internal sealed class CollaborationMessage
     public string componentId;
     public long stamp;
     public int pingMs;
+    public int chunkIndex;
+    public int chunkCount;
     public string[] ids;
     public string[] names;
     public string[] scenes;
