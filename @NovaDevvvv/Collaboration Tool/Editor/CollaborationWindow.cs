@@ -1676,8 +1676,7 @@ internal class CollaborationSessionImplementation
 
     public GameObject ResolveGameObject(string objectId)
     {
-        if (string.IsNullOrEmpty(objectId) || !GlobalObjectId.TryParse(objectId, out GlobalObjectId id)) return null;
-        UnityEngine.Object target = GlobalObjectId.GlobalObjectIdentifierToObjectSlow(id);
+        UnityEngine.Object target = ResolveRemoteObject(objectId);
         GameObject gameObject = target as GameObject;
         Component component = target as Component;
         return gameObject != null ? gameObject : component != null ? component.gameObject : null;
@@ -1689,8 +1688,8 @@ internal class CollaborationSessionImplementation
         Component component = target as Component;
         if (gameObject == null && component != null) gameObject = component.gameObject;
         if (gameObject == null) return false;
-        string id = GlobalObjectId.GetGlobalObjectIdSlow(gameObject).ToString();
-        return IsLockedByOther(id);
+        if (lockedObjectFlags.ContainsKey(gameObject)) return true;
+        return gameObject.GetComponents<Component>().Any(item => item != null && lockedObjectFlags.ContainsKey(item));
     }
 
     public bool TryGetSelectionColor(int instanceId, out Color color)
@@ -1718,6 +1717,8 @@ internal class CollaborationSessionImplementation
             foreach (Component component in target.GetComponents<Component>()) SetNotEditable(component);
         }
         ActiveEditorTracker.sharedTracker.ForceRebuild();
+        EditorApplication.RepaintHierarchyWindow();
+        SceneView.RepaintAll();
     }
 
     private void SetNotEditable(UnityEngine.Object target)
@@ -1732,6 +1733,7 @@ internal class CollaborationSessionImplementation
         foreach (KeyValuePair<UnityEngine.Object, HideFlags> pair in lockedObjectFlags)
             if (pair.Key != null) pair.Key.hideFlags = pair.Value;
         lockedObjectFlags.Clear();
+        EditorApplication.RepaintHierarchyWindow();
     }
 
     private void PublishSelectedProperties()
