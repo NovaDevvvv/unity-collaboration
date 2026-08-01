@@ -150,7 +150,7 @@ public sealed class CollaborationTool : EditorWindow
             padding = new RectOffset(14, 14, 14, 14),
             margin = new RectOffset(0, 0, 0, 0)
         };
-        chatPanelStyle = new GUIStyle(panelStyle) { padding = new RectOffset(12, 12, 12, 12) };
+        chatPanelStyle = new GUIStyle(panelStyle) { padding = new RectOffset(4, 4, 12, 12) };
         tabStyle = new GUIStyle(EditorStyles.miniButton)
         {
             normal = { background = SolidTexture(new Color32(17, 19, 24, 255)), textColor = new Color32(155, 163, 175, 255) },
@@ -172,7 +172,8 @@ public sealed class CollaborationTool : EditorWindow
         {
             normal = { background = SolidTexture(new Color32(41, 45, 52, 255)), textColor = new Color32(242, 244, 247, 255) },
             hover = { background = SolidTexture(new Color32(52, 58, 68, 255)), textColor = Color.white },
-            padding = new RectOffset(12, 12, 7, 7),
+            alignment = TextAnchor.MiddleCenter,
+            padding = new RectOffset(12, 12, 4, 4),
             border = new RectOffset(0, 0, 0, 0)
         };
         leaveStyle = new GUIStyle(flatButtonStyle)
@@ -453,7 +454,7 @@ public sealed class CollaborationTool : EditorWindow
                 {
                     if (own) GUILayout.FlexibleSpace();
                     EditorGUILayout.LabelField(Session.FormatChatLine(line), EditorStyles.wordWrappedLabel,
-                        GUILayout.MaxWidth(position.width * 0.76f));
+                        GUILayout.MaxWidth(position.width * 0.9f));
                     if (!own) GUILayout.FlexibleSpace();
                 }
                 GUILayout.Space(3f);
@@ -635,6 +636,7 @@ internal class CollaborationSessionImplementation
     private bool cameraPoseDirty;
     private readonly Dictionary<string, string> transformStates = new Dictionary<string, string>();
     private readonly Dictionary<string, string> componentStates = new Dictionary<string, string>();
+    private readonly Dictionary<string, UnityEngine.Object> remoteObjects = new Dictionary<string, UnityEngine.Object>();
     private readonly Dictionary<UnityEngine.Object, HideFlags> lockedObjectFlags = new Dictionary<UnityEngine.Object, HideFlags>();
     private readonly Dictionary<string, string> selectionOwners = new Dictionary<string, string>();
     private bool applyingRemoteTransform;
@@ -869,6 +871,7 @@ internal class CollaborationSessionImplementation
         RestoreLockedObjects();
         selectionOwners.Clear();
         componentStates.Clear();
+        remoteObjects.Clear();
         localSelectionId = null;
         try
         {
@@ -954,6 +957,7 @@ internal class CollaborationSessionImplementation
         packetsSent = packetsReceived = bytesSent = bytesReceived = 0;
         transformStates.Clear();
         componentStates.Clear();
+        remoteObjects.Clear();
         selectionOwners.Clear();
         localSelectionId = null;
         transformSnapshotReady = false;
@@ -1157,6 +1161,7 @@ internal class CollaborationSessionImplementation
                 SceneView.RepaintAll();
             }
             else if (message.type == "transform") ApplyRemoteTransform(message);
+            else if (message.type == "create") ApplyRemoteCreate(message);
             else if (message.type == "property") ApplyRemoteProperty(message);
             else if (message.type == "selection") ApplySelection(message.id, message.objectId);
             else if (message.type == "selection_denied")
@@ -1394,12 +1399,27 @@ internal class CollaborationSessionImplementation
             string gameObjectId = GlobalObjectId.GetGlobalObjectIdSlow(transform.gameObject).ToString();
             if (IsLockedByOther(gameObjectId)) continue;
             string state = TransformState(transform);
-            if (transformStates.TryGetValue(id, out string previous) && previous == state) continue;
+            bool existed = transformStates.TryGetValue(id, out string previous);
+            if (existed && previous == state) continue;
             transformStates[id] = state;
             if (!publish) continue;
             Vector3 p = transform.localPosition;
             Quaternion r = transform.localRotation;
             Vector3 s = transform.localScale;
+            if (!existed)
+            {
+                Component[] components = transform.gameObject.GetComponents<Component>()
+                    .Where(component => component != null && !(component is Transform)).ToArray();
+                SendProjectMessage(new CollaborationMessage { type = "create", id = LocalId,
+                    objectId = gameObjectId, componentId = id, text = transform.gameObject.name,
+                    scene = transform.gameObject.scene.name,
+                    path2 = transform.parent == null ? "" : GlobalObjectId.GetGlobalObjectIdSlow(transform.parent.gameObject).ToString(),
+                    x = p.x, y = p.y, z = p.z, qx = r.x, qy = r.y, qz = r.z, qw = r.w,
+                    sx = s.x, sy = s.y, sz = s.z,
+                    componentTypes = components.Select(component => component.GetType().AssemblyQualifiedName).ToArray(),
+                    componentData = components.Select(component => EditorJsonUtility.ToJson(component)).ToArray() });
+                continue;
+            }
             SendProjectMessage(new CollaborationMessage { type = "transform", id = LocalId, objectId = gameObjectId, componentId = id,
                 x = p.x, y = p.y, z = p.z, qx = r.x, qy = r.y, qz = r.z, qw = r.w,
                 sx = s.x, sy = s.y, sz = s.z });
@@ -1410,9 +1430,7 @@ internal class CollaborationSessionImplementation
     private void ApplyRemoteTransform(CollaborationMessage message)
     {
         string transformId = string.IsNullOrEmpty(message.componentId) ? message.objectId : message.componentId;
-        if (string.IsNullOrEmpty(transformId) ||
-            !GlobalObjectId.TryParse(transformId, out GlobalObjectId globalId)) return;
-        Transform transform = GlobalObjectId.GlobalObjectIdentifierToObjectSlow(globalId) as Transform;
+        Transform transform = ResolveRemoteObject(transformId) as Transform;
         if (transform == null) return;
         applyingRemoteTransform = true;
         try
@@ -1422,6 +1440,65 @@ internal class CollaborationSessionImplementation
             transform.localScale = new Vector3(message.sx, message.sy, message.sz);
             EditorUtility.SetDirty(transform);
             transformStates[transformId] = TransformState(transform);
+            SceneView.RepaintAll();
+        }
+        finally { applyingRemoteTransform = false; }
+    }
+
+    private UnityEngine.Object ResolveRemoteObject(string objectId)
+    {
+        if (string.IsNullOrEmpty(objectId)) return null;
+        if (remoteObjects.TryGetValue(objectId, out UnityEngine.Object mapped) && mapped != null) return mapped;
+        if (!GlobalObjectId.TryParse(objectId, out GlobalObjectId globalId)) return null;
+        return GlobalObjectId.GlobalObjectIdentifierToObjectSlow(globalId);
+    }
+
+    private void ApplyRemoteCreate(CollaborationMessage message)
+    {
+        if (string.IsNullOrEmpty(message.objectId) || ResolveRemoteObject(message.objectId) != null) return;
+        Scene targetScene = SceneManager.GetActiveScene();
+        for (int i = 0; i < SceneManager.sceneCount; i++)
+        {
+            Scene loaded = SceneManager.GetSceneAt(i);
+            if (loaded.isLoaded && string.Equals(loaded.name, message.scene, StringComparison.Ordinal))
+            {
+                targetScene = loaded;
+                break;
+            }
+        }
+
+        applyingRemoteTransform = true;
+        try
+        {
+            GameObject created = new GameObject(string.IsNullOrWhiteSpace(message.text) ? "GameObject" : message.text);
+            SceneManager.MoveGameObjectToScene(created, targetScene);
+            UnityEngine.Object parentObject = ResolveRemoteObject(message.path2);
+            GameObject parentGameObject = parentObject as GameObject;
+            Transform parent = parentGameObject != null ? parentGameObject.transform : parentObject as Transform;
+            created.transform.SetParent(parent, false);
+            created.transform.localPosition = new Vector3(message.x, message.y, message.z);
+            created.transform.localRotation = new Quaternion(message.qx, message.qy, message.qz, message.qw);
+            created.transform.localScale = new Vector3(message.sx, message.sy, message.sz);
+            remoteObjects[message.objectId] = created;
+            if (!string.IsNullOrEmpty(message.componentId)) remoteObjects[message.componentId] = created.transform;
+
+            int count = Math.Min(message.componentTypes?.Length ?? 0, message.componentData?.Length ?? 0);
+            for (int i = 0; i < count; i++)
+            {
+                Type type = Type.GetType(message.componentTypes[i]);
+                if (type == null || !typeof(Component).IsAssignableFrom(type) || type == typeof(Transform)) continue;
+                try
+                {
+                    Component component = created.GetComponent(type) ?? created.AddComponent(type);
+                    EditorJsonUtility.FromJsonOverwrite(message.componentData[i] ?? "{}", component);
+                }
+                catch (Exception exception) { Debug.LogWarning("Collaboration: could not recreate " + type.Name + ": " + exception.Message); }
+            }
+
+            string localTransformId = GlobalObjectId.GetGlobalObjectIdSlow(created.transform).ToString();
+            transformStates[localTransformId] = TransformState(created.transform);
+            EditorSceneManager.MarkSceneDirty(targetScene);
+            EditorApplication.RepaintHierarchyWindow();
             SceneView.RepaintAll();
         }
         finally { applyingRemoteTransform = false; }

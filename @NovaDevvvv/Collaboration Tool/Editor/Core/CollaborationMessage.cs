@@ -25,6 +25,8 @@ internal sealed class CollaborationMessage
     public string[] names;
     public string[] scenes;
     public string[] selections;
+    public string[] componentTypes;
+    public string[] componentData;
     public int[] pings;
     public string scene;
     public string path;
