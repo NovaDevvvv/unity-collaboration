@@ -667,6 +667,8 @@ internal class CollaborationSessionImplementation
     private readonly Dictionary<string, string> transformStates = new Dictionary<string, string>();
     private readonly Dictionary<string, string> transformObjectIds = new Dictionary<string, string>();
     private readonly Dictionary<string, string> componentStates = new Dictionary<string, string>();
+    private readonly Dictionary<string, string> componentObjectIds = new Dictionary<string, string>();
+    private readonly Dictionary<string, List<CollaborationMessage>> pendingComponentCreates = new Dictionary<string, List<CollaborationMessage>>();
     private readonly Dictionary<string, UnityEngine.Object> remoteObjects = new Dictionary<string, UnityEngine.Object>();
     private readonly Dictionary<string, byte[]> remoteAssetBackups = new Dictionary<string, byte[]>();
     private readonly Dictionary<string, string[]> incomingFileChunks = new Dictionary<string, string[]>();
@@ -874,6 +876,7 @@ internal class CollaborationSessionImplementation
         transformStates.Clear();
         transformObjectIds.Clear();
         componentStates.Clear();
+        componentObjectIds.Clear();
         transformSnapshotReady = false;
         lastLocalScene = CleanSceneName(sceneName);
         lastLocalScenePath = NormalizePath(scenePath);
@@ -914,6 +917,8 @@ internal class CollaborationSessionImplementation
         RestoreLockedObjects();
         selectionOwners.Clear();
         componentStates.Clear();
+        componentObjectIds.Clear();
+        pendingComponentCreates.Clear();
         remoteObjects.Clear();
         localSelectionId = null;
         try
@@ -1002,6 +1007,8 @@ internal class CollaborationSessionImplementation
         transformStates.Clear();
         transformObjectIds.Clear();
         componentStates.Clear();
+        componentObjectIds.Clear();
+        pendingComponentCreates.Clear();
         remoteObjects.Clear();
         selectionOwners.Clear();
         localSelectionId = null;
@@ -1212,6 +1219,8 @@ internal class CollaborationSessionImplementation
             else if (message.type == "transform") ApplyRemoteTransform(message);
             else if (message.type == "create") ApplyRemoteCreate(message);
             else if (message.type == "object_delete") ApplyRemoteObjectDelete(message);
+            else if (message.type == "component_create") ApplyRemoteComponentCreate(message);
+            else if (message.type == "component_delete") ApplyRemoteComponentDelete(message);
             else if (message.type == "property") ApplyRemoteProperty(message);
             else if (message.type == "selection") ApplySelection(message.id, message.objectId);
             else if (message.type == "selection_denied")
@@ -1620,6 +1629,7 @@ internal class CollaborationSessionImplementation
         if (!Connected || applyingRemoteTransform) return;
         bool publish = transformSnapshotReady;
         HashSet<string> currentTransformIds = new HashSet<string>();
+        HashSet<string> currentComponentIds = new HashSet<string>();
 #if UNITY_2022_2_OR_NEWER
         Transform[] transforms = UnityEngine.Object.FindObjectsByType<Transform>(FindObjectsSortMode.None);
 #else
@@ -1633,6 +1643,23 @@ internal class CollaborationSessionImplementation
             string id = GetSharedObjectId(transform);
             string gameObjectId = GetSharedObjectId(transform.gameObject);
             transformObjectIds[localTransformId] = gameObjectId;
+            foreach (Component component in transform.gameObject.GetComponents<Component>())
+            {
+                if (component == null || component is Transform) continue;
+                string localComponentId = GlobalObjectId.GetGlobalObjectIdSlow(component).ToString();
+                currentComponentIds.Add(localComponentId);
+                bool componentExisted = componentObjectIds.ContainsKey(localComponentId);
+                string sharedComponentId = GetSharedObjectId(component);
+                componentObjectIds[localComponentId] = sharedComponentId;
+                if (publish && !componentExisted)
+                    SendProjectMessage(new CollaborationMessage
+                    {
+                        type = "component_create", id = LocalId, objectId = gameObjectId,
+                        componentId = sharedComponentId,
+                        text = component.GetType().AssemblyQualifiedName,
+                        data = EditorJsonUtility.ToJson(component)
+                    });
+            }
             if (IsLockedByOther(gameObjectId)) continue;
             string state = TransformState(transform);
             bool existed = transformStates.TryGetValue(localTransformId, out string previous);
@@ -1644,16 +1671,12 @@ internal class CollaborationSessionImplementation
             Vector3 s = transform.localScale;
             if (!existed)
             {
-                Component[] components = transform.gameObject.GetComponents<Component>()
-                    .Where(component => component != null && !(component is Transform)).ToArray();
                 SendProjectMessage(new CollaborationMessage { type = "create", id = LocalId,
                     objectId = gameObjectId, componentId = id, text = transform.gameObject.name,
                     scene = transform.gameObject.scene.name,
                     path2 = transform.parent == null ? "" : GlobalObjectId.GetGlobalObjectIdSlow(transform.parent.gameObject).ToString(),
                     x = p.x, y = p.y, z = p.z, qx = r.x, qy = r.y, qz = r.z, qw = r.w,
-                    sx = s.x, sy = s.y, sz = s.z,
-                    componentTypes = components.Select(component => component.GetType().AssemblyQualifiedName).ToArray(),
-                    componentData = components.Select(component => EditorJsonUtility.ToJson(component)).ToArray() });
+                    sx = s.x, sy = s.y, sz = s.z });
                 continue;
             }
             SendProjectMessage(new CollaborationMessage { type = "transform", id = LocalId, objectId = gameObjectId, componentId = id,
@@ -1669,6 +1692,14 @@ internal class CollaborationSessionImplementation
                 transformStates.Remove(removedId);
                 if (!string.IsNullOrEmpty(removedObjectId))
                     SendProjectMessage(new CollaborationMessage { type = "object_delete", id = LocalId, objectId = removedObjectId });
+            }
+            foreach (string removedId in componentObjectIds.Keys.Where(key => !currentComponentIds.Contains(key)).ToArray())
+            {
+                string sharedComponentId = componentObjectIds[removedId];
+                componentObjectIds.Remove(removedId);
+                componentStates.Remove(removedId);
+                if (!string.IsNullOrEmpty(sharedComponentId))
+                    SendProjectMessage(new CollaborationMessage { type = "component_delete", id = LocalId, componentId = sharedComponentId });
             }
         }
         transformSnapshotReady = true;
@@ -1737,25 +1768,17 @@ internal class CollaborationSessionImplementation
             remoteObjects[message.objectId] = created;
             if (!string.IsNullOrEmpty(message.componentId)) remoteObjects[message.componentId] = created.transform;
 
-            int count = Math.Min(message.componentTypes?.Length ?? 0, message.componentData?.Length ?? 0);
-            for (int i = 0; i < count; i++)
-            {
-                Type type = Type.GetType(message.componentTypes[i]);
-                if (type == null || !typeof(Component).IsAssignableFrom(type) || type == typeof(Transform)) continue;
-                try
-                {
-                    Component component = created.GetComponent(type) ?? created.AddComponent(type);
-                    EditorJsonUtility.FromJsonOverwrite(message.componentData[i] ?? "{}", component);
-                }
-                catch (Exception exception) { Debug.LogWarning("Collaboration: could not recreate " + type.Name + ": " + exception.Message); }
-            }
-
             string localTransformId = GlobalObjectId.GetGlobalObjectIdSlow(created.transform).ToString();
             transformStates[localTransformId] = TransformState(created.transform);
             transformObjectIds[localTransformId] = message.objectId;
             EditorSceneManager.MarkSceneDirty(targetScene);
             EditorApplication.RepaintHierarchyWindow();
             SceneView.RepaintAll();
+            if (pendingComponentCreates.TryGetValue(message.objectId, out List<CollaborationMessage> pending))
+            {
+                pendingComponentCreates.Remove(message.objectId);
+                foreach (CollaborationMessage componentMessage in pending) ApplyRemoteComponentCreate(componentMessage);
+            }
         }
         finally { applyingRemoteTransform = false; }
     }
@@ -1773,6 +1796,13 @@ internal class CollaborationSessionImplementation
                 string localTransformId = GlobalObjectId.GetGlobalObjectIdSlow(removedTransform).ToString();
                 transformStates.Remove(localTransformId);
                 transformObjectIds.Remove(localTransformId);
+                foreach (Component component in removedTransform.GetComponents<Component>())
+                {
+                    if (component == null || component is Transform) continue;
+                    string localComponentId = GlobalObjectId.GetGlobalObjectIdSlow(component).ToString();
+                    componentObjectIds.Remove(localComponentId);
+                    componentStates.Remove(localComponentId);
+                }
             }
             HashSet<UnityEngine.Object> removedObjects = new HashSet<UnityEngine.Object>(removedTransforms.Cast<UnityEngine.Object>());
             foreach (Transform removedTransform in removedTransforms) removedObjects.Add(removedTransform.gameObject);
@@ -1784,6 +1814,55 @@ internal class CollaborationSessionImplementation
             SceneView.RepaintAll();
         }
         finally { applyingRemoteTransform = false; }
+    }
+
+    private void ApplyRemoteComponentCreate(CollaborationMessage message)
+    {
+        if (string.IsNullOrEmpty(message.componentId) || ResolveRemoteObject(message.componentId) != null) return;
+        GameObject target = ResolveGameObject(message.objectId);
+        if (target == null)
+        {
+            if (!pendingComponentCreates.TryGetValue(message.objectId ?? "", out List<CollaborationMessage> pending))
+                pendingComponentCreates[message.objectId ?? ""] = pending = new List<CollaborationMessage>();
+            pending.Add(message);
+            return;
+        }
+        Type type = Type.GetType(message.text ?? "");
+        if (target == null || type == null || !typeof(Component).IsAssignableFrom(type) || type == typeof(Transform)) return;
+        applyingRemoteProperty = true;
+        try
+        {
+            Component component = Undo.AddComponent(target, type);
+            if (component == null) return;
+            EditorJsonUtility.FromJsonOverwrite(message.data ?? "{}", component);
+            remoteObjects[message.componentId] = component;
+            string localId = GlobalObjectId.GetGlobalObjectIdSlow(component).ToString();
+            componentObjectIds[localId] = message.componentId;
+            componentStates[localId] = EditorJsonUtility.ToJson(component);
+            EditorUtility.SetDirty(component);
+            ActiveEditorTracker.sharedTracker.ForceRebuild();
+            SceneView.RepaintAll();
+        }
+        catch (Exception exception) { QueueError("Could not add remote component " + type.Name + ": " + exception.Message); }
+        finally { applyingRemoteProperty = false; }
+    }
+
+    private void ApplyRemoteComponentDelete(CollaborationMessage message)
+    {
+        Component component = ResolveRemoteObject(message.componentId) as Component;
+        if (component == null || component is Transform) return;
+        applyingRemoteProperty = true;
+        try
+        {
+            string localId = GlobalObjectId.GetGlobalObjectIdSlow(component).ToString();
+            componentObjectIds.Remove(localId);
+            componentStates.Remove(localId);
+            remoteObjects.Remove(message.componentId);
+            Undo.DestroyObjectImmediate(component);
+            ActiveEditorTracker.sharedTracker.ForceRebuild();
+            SceneView.RepaintAll();
+        }
+        finally { applyingRemoteProperty = false; }
     }
 
     private static string TransformState(Transform transform)
@@ -1912,18 +1991,19 @@ internal class CollaborationSessionImplementation
         foreach (UnityEngine.Object component in objects)
         {
             if (component == null || component is Transform) continue;
-            string componentId = GlobalObjectId.GetGlobalObjectIdSlow(component).ToString();
+            string localComponentId = GlobalObjectId.GetGlobalObjectIdSlow(component).ToString();
+            string componentId = GetSharedObjectId(component);
             string json = EditorJsonUtility.ToJson(component);
-            if (componentStates.TryGetValue(componentId, out string oldJson) && oldJson == json) continue;
-            componentStates[componentId] = json;
+            if (componentStates.TryGetValue(localComponentId, out string oldJson) && oldJson == json) continue;
+            componentStates[localComponentId] = json;
             SendProjectMessage(new CollaborationMessage { type = "property", id = LocalId, objectId = localSelectionId, componentId = componentId, data = json });
         }
     }
 
     private void ApplyRemoteProperty(CollaborationMessage message)
     {
-        if (string.IsNullOrEmpty(message.componentId) || !GlobalObjectId.TryParse(message.componentId, out GlobalObjectId id)) return;
-        UnityEngine.Object target = GlobalObjectId.GlobalObjectIdentifierToObjectSlow(id);
+        if (string.IsNullOrEmpty(message.componentId)) return;
+        UnityEngine.Object target = ResolveRemoteObject(message.componentId);
         if (target == null || target is Transform) return;
         applyingRemoteProperty = true;
         try
@@ -1932,7 +2012,8 @@ internal class CollaborationSessionImplementation
             EditorJsonUtility.FromJsonOverwrite(message.data ?? "{}", target);
             target.hideFlags = flags;
             EditorUtility.SetDirty(target);
-            componentStates[message.componentId] = EditorJsonUtility.ToJson(target);
+            string localComponentId = GlobalObjectId.GetGlobalObjectIdSlow(target).ToString();
+            componentStates[localComponentId] = EditorJsonUtility.ToJson(target);
             SceneView.RepaintAll();
         }
         finally { applyingRemoteProperty = false; }
