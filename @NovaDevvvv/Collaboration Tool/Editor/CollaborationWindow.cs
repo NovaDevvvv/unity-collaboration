@@ -664,6 +664,7 @@ internal class CollaborationSessionImplementation
     private Quaternion pendingCameraRotation = Quaternion.identity;
     private bool cameraPoseDirty;
     private readonly Dictionary<string, string> transformStates = new Dictionary<string, string>();
+    private readonly Dictionary<string, string> transformObjectIds = new Dictionary<string, string>();
     private readonly Dictionary<string, string> componentStates = new Dictionary<string, string>();
     private readonly Dictionary<string, UnityEngine.Object> remoteObjects = new Dictionary<string, UnityEngine.Object>();
     private readonly Dictionary<UnityEngine.Object, HideFlags> lockedObjectFlags = new Dictionary<UnityEngine.Object, HideFlags>();
@@ -864,6 +865,10 @@ internal class CollaborationSessionImplementation
     private void PublishLocalScene(string sceneName, string scenePath)
     {
         bool publishSceneOpen = sceneSnapshotReady;
+        transformStates.Clear();
+        transformObjectIds.Clear();
+        componentStates.Clear();
+        transformSnapshotReady = false;
         lastLocalScene = CleanSceneName(sceneName);
         lastLocalScenePath = NormalizePath(scenePath);
         CollaborationPlayer localPlayer = players.FirstOrDefault(player => player.Id == LocalId);
@@ -997,6 +1002,7 @@ internal class CollaborationSessionImplementation
         PingMs = host ? 0 : -1;
         packetsSent = packetsReceived = bytesSent = bytesReceived = 0;
         transformStates.Clear();
+        transformObjectIds.Clear();
         componentStates.Clear();
         remoteObjects.Clear();
         selectionOwners.Clear();
@@ -1213,6 +1219,7 @@ internal class CollaborationSessionImplementation
             }
             else if (message.type == "transform") ApplyRemoteTransform(message);
             else if (message.type == "create") ApplyRemoteCreate(message);
+            else if (message.type == "object_delete") ApplyRemoteObjectDelete(message);
             else if (message.type == "property") ApplyRemoteProperty(message);
             else if (message.type == "selection") ApplySelection(message.id, message.objectId);
             else if (message.type == "selection_denied")
@@ -1502,6 +1509,7 @@ internal class CollaborationSessionImplementation
     {
         if (!Connected || applyingRemoteTransform) return;
         bool publish = transformSnapshotReady;
+        HashSet<string> currentTransformIds = new HashSet<string>();
 #if UNITY_2022_2_OR_NEWER
         Transform[] transforms = UnityEngine.Object.FindObjectsByType<Transform>(FindObjectsSortMode.None);
 #else
@@ -1510,13 +1518,16 @@ internal class CollaborationSessionImplementation
         foreach (Transform transform in transforms)
         {
             if (!transform.gameObject.scene.IsValid() || !transform.gameObject.scene.isLoaded) continue;
-            string id = GlobalObjectId.GetGlobalObjectIdSlow(transform).ToString();
-            string gameObjectId = GlobalObjectId.GetGlobalObjectIdSlow(transform.gameObject).ToString();
+            string localTransformId = GlobalObjectId.GetGlobalObjectIdSlow(transform).ToString();
+            currentTransformIds.Add(localTransformId);
+            string id = GetSharedObjectId(transform);
+            string gameObjectId = GetSharedObjectId(transform.gameObject);
+            transformObjectIds[localTransformId] = gameObjectId;
             if (IsLockedByOther(gameObjectId)) continue;
             string state = TransformState(transform);
-            bool existed = transformStates.TryGetValue(id, out string previous);
+            bool existed = transformStates.TryGetValue(localTransformId, out string previous);
             if (existed && previous == state) continue;
-            transformStates[id] = state;
+            transformStates[localTransformId] = state;
             if (!publish) continue;
             Vector3 p = transform.localPosition;
             Quaternion r = transform.localRotation;
@@ -1539,7 +1550,25 @@ internal class CollaborationSessionImplementation
                 x = p.x, y = p.y, z = p.z, qx = r.x, qy = r.y, qz = r.z, qw = r.w,
                 sx = s.x, sy = s.y, sz = s.z });
         }
+        if (publish)
+        {
+            foreach (string removedId in transformObjectIds.Keys.Where(key => !currentTransformIds.Contains(key)).ToArray())
+            {
+                string removedObjectId = transformObjectIds[removedId];
+                transformObjectIds.Remove(removedId);
+                transformStates.Remove(removedId);
+                if (!string.IsNullOrEmpty(removedObjectId))
+                    SendProjectMessage(new CollaborationMessage { type = "object_delete", id = LocalId, objectId = removedObjectId });
+            }
+        }
         transformSnapshotReady = true;
+    }
+
+    private string GetSharedObjectId(UnityEngine.Object target)
+    {
+        foreach (KeyValuePair<string, UnityEngine.Object> pair in remoteObjects)
+            if (pair.Value == target) return pair.Key;
+        return GlobalObjectId.GetGlobalObjectIdSlow(target).ToString();
     }
 
     private void ApplyRemoteTransform(CollaborationMessage message)
@@ -1612,7 +1641,34 @@ internal class CollaborationSessionImplementation
 
             string localTransformId = GlobalObjectId.GetGlobalObjectIdSlow(created.transform).ToString();
             transformStates[localTransformId] = TransformState(created.transform);
+            transformObjectIds[localTransformId] = message.objectId;
             EditorSceneManager.MarkSceneDirty(targetScene);
+            EditorApplication.RepaintHierarchyWindow();
+            SceneView.RepaintAll();
+        }
+        finally { applyingRemoteTransform = false; }
+    }
+
+    private void ApplyRemoteObjectDelete(CollaborationMessage message)
+    {
+        GameObject target = ResolveGameObject(message.objectId);
+        if (target == null) return;
+        applyingRemoteTransform = true;
+        try
+        {
+            Transform[] removedTransforms = target.GetComponentsInChildren<Transform>(true);
+            foreach (Transform removedTransform in removedTransforms)
+            {
+                string localTransformId = GlobalObjectId.GetGlobalObjectIdSlow(removedTransform).ToString();
+                transformStates.Remove(localTransformId);
+                transformObjectIds.Remove(localTransformId);
+            }
+            HashSet<UnityEngine.Object> removedObjects = new HashSet<UnityEngine.Object>(removedTransforms.Cast<UnityEngine.Object>());
+            foreach (Transform removedTransform in removedTransforms) removedObjects.Add(removedTransform.gameObject);
+            foreach (string key in remoteObjects.Where(pair => removedObjects.Contains(pair.Value))
+                         .Select(pair => pair.Key).ToArray())
+                remoteObjects.Remove(key);
+            Undo.DestroyObjectImmediate(target);
             EditorApplication.RepaintHierarchyWindow();
             SceneView.RepaintAll();
         }
