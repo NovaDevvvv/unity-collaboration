@@ -89,7 +89,6 @@ public sealed class CollaborationTool : EditorWindow
         fieldStyle = null;
         flatButtonStyle = null;
         chatPanelStyle = null;
-        EnsureStyles();
     }
 
     private void OnDisable()
@@ -864,6 +863,7 @@ internal class CollaborationSessionImplementation
 
     private void PublishLocalScene(string sceneName, string scenePath)
     {
+        bool publishSceneOpen = sceneSnapshotReady;
         lastLocalScene = CleanSceneName(sceneName);
         lastLocalScenePath = NormalizePath(scenePath);
         CollaborationPlayer localPlayer = players.FirstOrDefault(player => player.Id == LocalId);
@@ -879,6 +879,8 @@ internal class CollaborationSessionImplementation
                 type = "scene_open_request", id = LocalId, name = localName,
                 scene = lastLocalScene, path = lastLocalScenePath
             });
+        else if (IsHost && publishSceneOpen && IsSafeScenePath(lastLocalScenePath))
+            foreach (Peer peer in peers.Values.ToArray()) _ = SendSceneToPeer(peer, lastLocalScenePath);
         sceneSnapshotReady = true;
         Changed?.Invoke();
     }
@@ -1095,6 +1097,8 @@ internal class CollaborationSessionImplementation
                     peer.SceneName = CleanSceneName(message.scene);
                     peers[peer.Id] = peer;
                     mainThread.Enqueue(() => AddOrUpdatePlayer(peer.Id, peer.Name, false).SceneName = peer.SceneName);
+                    string hostScenePath = NormalizePath(SceneManager.GetActiveScene().path);
+                    if (IsSafeScenePath(hostScenePath)) _ = SendSceneToPeer(peer, hostScenePath);
                     BroadcastRoster();
                     AddChat("Server", peer.Name + " joined.");
                 }
@@ -1240,6 +1244,8 @@ internal class CollaborationSessionImplementation
             else if (message.type == "scene")
                 AddOrUpdatePlayer(message.id, message.name, message.id == LocalId && IsHost).SceneName = CleanSceneName(message.scene);
             else if (message.type == "scene_open_request")
+                ApplyRemoteSceneOpen(message);
+            else if (message.type == "scene_open")
                 ApplyRemoteSceneOpen(message);
             else if (message.type == "file" || message.type == "delete" || message.type == "move")
                 ApplyRemoteFile(message);
@@ -1391,6 +1397,36 @@ internal class CollaborationSessionImplementation
         catch (Exception exception) { QueueError("Could not sync " + projectPath + ": " + exception.Message); }
     }
 
+    private CollaborationMessage CreateProjectFileMessage(string projectPath)
+    {
+        string normalized = NormalizePath(projectPath);
+        string absolutePath = ToAbsolutePath(normalized);
+        if (!File.Exists(absolutePath) || new FileInfo(absolutePath).Length > MaxSyncedFileBytes) return null;
+        return new CollaborationMessage
+        {
+            type = "file", id = LocalId, path = normalized,
+            data = Convert.ToBase64String(File.ReadAllBytes(absolutePath))
+        };
+    }
+
+    private async Task SendSceneToPeer(Peer peer, string scenePath)
+    {
+        try
+        {
+            CollaborationMessage meta = CreateProjectFileMessage(scenePath + ".meta");
+            CollaborationMessage scene = CreateProjectFileMessage(scenePath);
+            if (meta != null) await Send(peer.Socket, peer.SendLock, meta);
+            if (scene == null) return;
+            await Send(peer.Socket, peer.SendLock, scene);
+            await Send(peer.Socket, peer.SendLock, new CollaborationMessage
+            {
+                type = "scene_open", id = LocalId, name = localName,
+                scene = Path.GetFileNameWithoutExtension(scenePath), path = NormalizePath(scenePath)
+            });
+        }
+        catch { }
+    }
+
     private void SendProjectMessage(CollaborationMessage message)
     {
         if (!Connected) return;
@@ -1448,7 +1484,8 @@ internal class CollaborationSessionImplementation
 
     private void ApplyRemoteSceneOpen(CollaborationMessage message)
     {
-        if (!IsHost || !IsSafeScenePath(message.path)) return;
+        if (message.type == "scene_open_request" && !IsHost) return;
+        if (!IsSafeScenePath(message.path)) return;
         string scenePath = NormalizePath(message.path);
         if (AssetDatabase.LoadAssetAtPath<SceneAsset>(scenePath) == null)
         {
