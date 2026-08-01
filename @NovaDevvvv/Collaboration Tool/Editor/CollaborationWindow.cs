@@ -655,6 +655,8 @@ internal class CollaborationSessionImplementation
     private int backupLinkAttempt;
     private string localName;
     private string lastLocalScene;
+    private string lastLocalScenePath;
+    private bool sceneSnapshotReady;
     private double lastPresenceSend;
     private double lastTransformScan;
     private double lastPropertyScan;
@@ -860,16 +862,24 @@ internal class CollaborationSessionImplementation
         cameraPoseDirty = true;
     }
 
-    private void PublishLocalScene(string sceneName)
+    private void PublishLocalScene(string sceneName, string scenePath)
     {
         lastLocalScene = CleanSceneName(sceneName);
+        lastLocalScenePath = NormalizePath(scenePath);
         CollaborationPlayer localPlayer = players.FirstOrDefault(player => player.Id == LocalId);
         if (localPlayer != null) localPlayer.SceneName = lastLocalScene;
         CollaborationMessage message = new CollaborationMessage
         {
-            type = "scene", id = LocalId, name = localName, scene = lastLocalScene
+            type = "scene", id = LocalId, name = localName, scene = lastLocalScene, path = lastLocalScenePath
         };
         if (IsHost) _ = Broadcast(message); else _ = SendClient(message);
+        if (!IsHost && sceneSnapshotReady && IsSafeScenePath(lastLocalScenePath))
+            _ = SendClient(new CollaborationMessage
+            {
+                type = "scene_open_request", id = LocalId, name = localName,
+                scene = lastLocalScene, path = lastLocalScenePath
+            });
+        sceneSnapshotReady = true;
         Changed?.Invoke();
     }
 
@@ -976,6 +986,8 @@ internal class CollaborationSessionImplementation
     {
         localName = name;
         lastLocalScene = null;
+        lastLocalScenePath = null;
+        sceneSnapshotReady = false;
         LocalId = Guid.NewGuid().ToString("N");
         IsHost = host;
         Error = "";
@@ -998,9 +1010,12 @@ internal class CollaborationSessionImplementation
         if (settingsLoaded && now >= nextUpdateCheck) CheckForUpdate();
         if (!Connected) return;
 
-        string activeScene = GetActiveSceneName();
-        if (!string.Equals(activeScene, lastLocalScene, StringComparison.Ordinal))
-            PublishLocalScene(activeScene);
+        Scene activeScene = SceneManager.GetActiveScene();
+        string activeSceneName = CleanSceneName(activeScene.name);
+        string activeScenePath = NormalizePath(activeScene.path);
+        if (!string.Equals(activeSceneName, lastLocalScene, StringComparison.Ordinal) ||
+            !string.Equals(activeScenePath, lastLocalScenePath, StringComparison.Ordinal))
+            PublishLocalScene(activeSceneName, activeScenePath);
 
         if (cameraPoseDirty && now - lastPresenceSend > 0.05d)
         {
@@ -1100,6 +1115,11 @@ internal class CollaborationSessionImplementation
                 }
                 else if (message.type == "select_request")
                     HandleSelectionRequest(peer.Id, peer.Name, message.objectId);
+                else if (message.type == "scene_open_request")
+                {
+                    peer.SceneName = CleanSceneName(message.scene);
+                    HandleIncoming(message);
+                }
                 else
                 {
                     if (message.type == "scene") peer.SceneName = CleanSceneName(message.scene);
@@ -1219,6 +1239,8 @@ internal class CollaborationSessionImplementation
             }
             else if (message.type == "scene")
                 AddOrUpdatePlayer(message.id, message.name, message.id == LocalId && IsHost).SceneName = CleanSceneName(message.scene);
+            else if (message.type == "scene_open_request")
+                ApplyRemoteSceneOpen(message);
             else if (message.type == "file" || message.type == "delete" || message.type == "move")
                 ApplyRemoteFile(message);
             Changed?.Invoke();
@@ -1414,6 +1436,29 @@ internal class CollaborationSessionImplementation
         {
             Error = "Could not apply remote change to " + message.path + ": " + exception.Message;
         }
+    }
+
+    private static bool IsSafeScenePath(string path)
+    {
+        string normalized = NormalizePath(path);
+        return normalized.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase) &&
+               normalized.EndsWith(".unity", StringComparison.OrdinalIgnoreCase) &&
+               !normalized.Contains("../");
+    }
+
+    private void ApplyRemoteSceneOpen(CollaborationMessage message)
+    {
+        if (!IsHost || !IsSafeScenePath(message.path)) return;
+        string scenePath = NormalizePath(message.path);
+        if (AssetDatabase.LoadAssetAtPath<SceneAsset>(scenePath) == null)
+        {
+            Error = "Could not open " + scenePath + " because it has not synced to this project yet.";
+            return;
+        }
+        Scene current = SceneManager.GetActiveScene();
+        if (string.Equals(NormalizePath(current.path), scenePath, StringComparison.OrdinalIgnoreCase)) return;
+        if (!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()) return;
+        EditorSceneManager.OpenScene(scenePath, OpenSceneMode.Single);
     }
 
     private void PublishChangedTransforms()
