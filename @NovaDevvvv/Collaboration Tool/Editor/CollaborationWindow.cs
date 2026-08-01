@@ -63,6 +63,7 @@ public sealed class CollaborationTool : EditorWindow
 
     private void OnEnable()
     {
+        ResetStyles();
         titleContent = new GUIContent("Collaboration");
         Session.Changed -= Repaint;
         Session.Changed += Repaint;
@@ -72,6 +73,23 @@ public sealed class CollaborationTool : EditorWindow
         EditorApplication.hierarchyWindowItemOnGUI += OnHierarchyItemGUI;
         if (Session.Connected)
             page = Page.Session;
+    }
+
+    private void ResetStyles()
+    {
+        titleStyle = null;
+        subtitleStyle = null;
+        centeredLabelStyle = null;
+        centeredDetailStyle = null;
+        panelStyle = null;
+        tabStyle = null;
+        tabActiveStyle = null;
+        tabContainerStyle = null;
+        leaveStyle = null;
+        fieldStyle = null;
+        flatButtonStyle = null;
+        chatPanelStyle = null;
+        EnsureStyles();
     }
 
     private void OnDisable()
