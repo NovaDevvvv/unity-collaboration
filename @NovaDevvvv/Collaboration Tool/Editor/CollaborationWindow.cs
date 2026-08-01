@@ -733,6 +733,7 @@ internal class CollaborationSessionImplementation
         AssemblyReloadEvents.beforeAssemblyReload += Close;
         EditorApplication.quitting += Close;
         Selection.selectionChanged += OnLocalSelectionChanged;
+        EditorSceneManager.sceneSaved += OnSceneSaved;
         EditorApplication.delayCall += InitializeEditorState;
     }
 
@@ -870,7 +871,6 @@ internal class CollaborationSessionImplementation
 
     private void PublishLocalScene(string sceneName, string scenePath)
     {
-        bool publishSceneOpen = sceneSnapshotReady;
         transformStates.Clear();
         transformObjectIds.Clear();
         componentStates.Clear();
@@ -884,14 +884,6 @@ internal class CollaborationSessionImplementation
             type = "scene", id = LocalId, name = localName, scene = lastLocalScene, path = lastLocalScenePath
         };
         if (IsHost) _ = Broadcast(message); else _ = SendClient(message);
-        if (!IsHost && sceneSnapshotReady && IsSafeScenePath(lastLocalScenePath))
-            _ = SendClient(new CollaborationMessage
-            {
-                type = "scene_open_request", id = LocalId, name = localName,
-                scene = lastLocalScene, path = lastLocalScenePath
-            });
-        else if (IsHost && publishSceneOpen && IsSafeScenePath(lastLocalScenePath))
-            foreach (Peer peer in peers.Values.ToArray()) _ = SendSceneToPeer(peer, lastLocalScenePath);
         sceneSnapshotReady = true;
         Changed?.Invoke();
     }
@@ -1109,8 +1101,7 @@ internal class CollaborationSessionImplementation
                     peer.SceneName = CleanSceneName(message.scene);
                     peers[peer.Id] = peer;
                     mainThread.Enqueue(() => AddOrUpdatePlayer(peer.Id, peer.Name, false).SceneName = peer.SceneName);
-                    string hostScenePath = NormalizePath(SceneManager.GetActiveScene().path);
-                    if (IsSafeScenePath(hostScenePath)) _ = SendAssetSnapshotToPeer(peer, hostScenePath);
+                    _ = SendAssetSnapshotToPeer(peer);
                     BroadcastRoster();
                     AddChat("Server", peer.Name + " joined.");
                 }
@@ -1131,11 +1122,6 @@ internal class CollaborationSessionImplementation
                 }
                 else if (message.type == "select_request")
                     HandleSelectionRequest(peer.Id, peer.Name, message.objectId);
-                else if (message.type == "scene_open_request")
-                {
-                    peer.SceneName = CleanSceneName(message.scene);
-                    HandleIncoming(message);
-                }
                 else
                 {
                     if (message.type == "scene") peer.SceneName = CleanSceneName(message.scene);
@@ -1256,10 +1242,6 @@ internal class CollaborationSessionImplementation
             }
             else if (message.type == "scene")
                 AddOrUpdatePlayer(message.id, message.name, message.id == LocalId && IsHost).SceneName = CleanSceneName(message.scene);
-            else if (message.type == "scene_open_request")
-                ApplyRemoteSceneOpen(message);
-            else if (message.type == "scene_open")
-                ApplyRemoteSceneOpen(message);
             else if (message.type == "file" || message.type == "file_chunk" || message.type == "folder" || message.type == "delete" || message.type == "move")
                 ApplyRemoteFile(message);
             Changed?.Invoke();
@@ -1365,11 +1347,21 @@ internal class CollaborationSessionImplementation
     public void PublishImportedAsset(string assetPath)
     {
         if (!ShouldPublishAssetEvents || !IsSafeProjectPath(assetPath)) return;
-        if (assetPath.EndsWith(".unity", StringComparison.OrdinalIgnoreCase)) return;
         string metaPath = assetPath + ".meta";
+        if (Directory.Exists(ToAbsolutePath(assetPath)))
+        {
+            SendProjectMessage(new CollaborationMessage { type = "folder", id = LocalId, path = NormalizePath(assetPath) });
+            if (File.Exists(ToAbsolutePath(metaPath))) SendProjectFile(metaPath);
+            return;
+        }
         if (File.Exists(ToAbsolutePath(metaPath)))
             SendProjectFile(metaPath);
         SendProjectFile(assetPath);
+    }
+
+    private void OnSceneSaved(Scene scene)
+    {
+        if (Connected && !string.IsNullOrEmpty(scene.path)) PublishImportedAsset(scene.path);
     }
 
     public void PublishDeletedAsset(string assetPath)
@@ -1431,16 +1423,11 @@ internal class CollaborationSessionImplementation
             if (meta != null) await Send(peer.Socket, peer.SendLock, meta);
             if (scene == null) return;
             await Send(peer.Socket, peer.SendLock, scene);
-            await Send(peer.Socket, peer.SendLock, new CollaborationMessage
-            {
-                type = "scene_open", id = LocalId, name = localName,
-                scene = Path.GetFileNameWithoutExtension(scenePath), path = NormalizePath(scenePath)
-            });
         }
         catch { }
     }
 
-    private async Task SendAssetSnapshotToPeer(Peer peer, string scenePath)
+    private async Task SendAssetSnapshotToPeer(Peer peer)
     {
         try
         {
@@ -1455,8 +1442,8 @@ internal class CollaborationSessionImplementation
             string[] files = Directory.GetFiles(assetsRoot, "*", SearchOption.AllDirectories)
                 .Select(path => "Assets/" + NormalizePath(path.Substring(assetsRoot.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)))
                 .Where(ShouldIncludeInAssetSnapshot)
-                .OrderBy(path => path.EndsWith(".meta", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
-                .ThenBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(path => SnapshotAssetPath(path), StringComparer.OrdinalIgnoreCase)
+                .ThenBy(path => path.EndsWith(".meta", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
                 .ToArray();
             foreach (string path in files)
                 await SendFileToPeer(peer, path);
@@ -1481,6 +1468,13 @@ internal class CollaborationSessionImplementation
         string extension = Path.GetExtension(withoutMeta);
         return !new[] { ".cs", ".dll", ".asmdef", ".asmref", ".rsp", ".pdb", ".mdb" }
             .Contains(extension, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string SnapshotAssetPath(string path)
+    {
+        return path.EndsWith(".meta", StringComparison.OrdinalIgnoreCase)
+            ? path.Substring(0, path.Length - 5)
+            : path;
     }
 
     private async Task SendFileToPeer(Peer peer, string projectPath)
@@ -1752,7 +1746,7 @@ internal class CollaborationSessionImplementation
     private void ApplyRemoteCreate(CollaborationMessage message)
     {
         if (string.IsNullOrEmpty(message.objectId) || ResolveRemoteObject(message.objectId) != null) return;
-        Scene targetScene = SceneManager.GetActiveScene();
+        Scene targetScene = new Scene();
         for (int i = 0; i < SceneManager.sceneCount; i++)
         {
             Scene loaded = SceneManager.GetSceneAt(i);
@@ -1762,6 +1756,7 @@ internal class CollaborationSessionImplementation
                 break;
             }
         }
+        if (!targetScene.IsValid() || !targetScene.isLoaded) return;
 
         applyingRemoteTransform = true;
         try
