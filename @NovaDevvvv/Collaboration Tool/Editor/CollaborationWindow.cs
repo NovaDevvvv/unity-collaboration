@@ -1108,7 +1108,8 @@ internal class CollaborationSessionImplementation
                     peer.SceneName = CleanSceneName(message.scene);
                     peers[peer.Id] = peer;
                     mainThread.Enqueue(() => AddOrUpdatePlayer(peer.Id, peer.Name, false).SceneName = peer.SceneName);
-                    _ = SendAssetSnapshotToPeer(peer);
+                    string hostScenePath = NormalizePath(SceneManager.GetActiveScene().path);
+                    _ = SendAssetSnapshotToPeer(peer, hostScenePath);
                     BroadcastRoster();
                     AddChat("Server", peer.Name + " joined.");
                 }
@@ -1251,6 +1252,8 @@ internal class CollaborationSessionImplementation
             }
             else if (message.type == "scene")
                 AddOrUpdatePlayer(message.id, message.name, message.id == LocalId && IsHost).SceneName = CleanSceneName(message.scene);
+            else if (message.type == "scene_open")
+                ApplyInitialHostScene(message);
             else if (message.type == "file" || message.type == "file_chunk" || message.type == "folder" || message.type == "delete" || message.type == "move")
                 ApplyRemoteFile(message);
             Changed?.Invoke();
@@ -1421,7 +1424,7 @@ internal class CollaborationSessionImplementation
         catch (Exception exception) { QueueError("Could not sync " + projectPath + ": " + exception.Message); }
     }
 
-    private async Task SendAssetSnapshotToPeer(Peer peer)
+    private async Task SendAssetSnapshotToPeer(Peer peer, string hostScenePath)
     {
         try
         {
@@ -1441,6 +1444,12 @@ internal class CollaborationSessionImplementation
                 .ToArray();
             foreach (string path in files)
                 await SendFileToPeer(peer, path);
+            if (IsSafeScenePath(hostScenePath))
+                await Send(peer.Socket, peer.SendLock, new CollaborationMessage
+                {
+                    type = "scene_open", id = LocalId, name = localName,
+                    scene = Path.GetFileNameWithoutExtension(hostScenePath), path = hostScenePath
+                });
         }
         catch (Exception exception)
         {
@@ -1624,6 +1633,24 @@ internal class CollaborationSessionImplementation
                !normalized.Contains("../");
     }
 
+    private void ApplyInitialHostScene(CollaborationMessage message)
+    {
+        if (IsHost || !IsSafeScenePath(message.path)) return;
+        string scenePath = NormalizePath(message.path);
+        if (AssetDatabase.LoadAssetAtPath<SceneAsset>(scenePath) == null)
+        {
+            AssetDatabase.ImportAsset(scenePath, ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate);
+            if (AssetDatabase.LoadAssetAtPath<SceneAsset>(scenePath) == null)
+            {
+                Error = "The host scene could not be imported after asset synchronization: " + scenePath;
+                return;
+            }
+        }
+        Scene current = SceneManager.GetActiveScene();
+        if (!string.Equals(NormalizePath(current.path), scenePath, StringComparison.OrdinalIgnoreCase))
+            EditorSceneManager.OpenScene(scenePath, OpenSceneMode.Single);
+    }
+
     private void PublishChangedTransforms()
     {
         if (!Connected || applyingRemoteTransform) return;
@@ -1648,8 +1675,21 @@ internal class CollaborationSessionImplementation
                 if (component == null || component is Transform) continue;
                 string localComponentId = GlobalObjectId.GetGlobalObjectIdSlow(component).ToString();
                 currentComponentIds.Add(localComponentId);
-                bool componentExisted = componentObjectIds.ContainsKey(localComponentId);
-                string sharedComponentId = GetSharedObjectId(component);
+                bool componentExisted = componentObjectIds.TryGetValue(localComponentId, out string sharedComponentId);
+                if (!componentExisted && TryGetMappedObjectId(component, out sharedComponentId)) componentExisted = true;
+                if (!componentExisted)
+                {
+                    sharedComponentId = publish
+                        ? "collab-component:" + Guid.NewGuid().ToString("N")
+                        : GlobalObjectId.GetGlobalObjectIdSlow(component).ToString();
+                    if (publish) remoteObjects[sharedComponentId] = component;
+                }
+                foreach (string staleId in componentObjectIds.Where(pair => pair.Key != localComponentId && pair.Value == sharedComponentId)
+                             .Select(pair => pair.Key).ToArray())
+                {
+                    componentObjectIds.Remove(staleId);
+                    componentStates.Remove(staleId);
+                }
                 componentObjectIds[localComponentId] = sharedComponentId;
                 if (publish && !componentExisted)
                     SendProjectMessage(new CollaborationMessage
@@ -1707,9 +1747,20 @@ internal class CollaborationSessionImplementation
 
     private string GetSharedObjectId(UnityEngine.Object target)
     {
-        foreach (KeyValuePair<string, UnityEngine.Object> pair in remoteObjects)
-            if (pair.Value == target) return pair.Key;
+        if (TryGetMappedObjectId(target, out string mappedId)) return mappedId;
         return GlobalObjectId.GetGlobalObjectIdSlow(target).ToString();
+    }
+
+    private bool TryGetMappedObjectId(UnityEngine.Object target, out string mappedId)
+    {
+        foreach (KeyValuePair<string, UnityEngine.Object> pair in remoteObjects)
+        {
+            if (pair.Value != target) continue;
+            mappedId = pair.Key;
+            return true;
+        }
+        mappedId = null;
+        return false;
     }
 
     private void ApplyRemoteTransform(CollaborationMessage message)
