@@ -157,7 +157,11 @@ public sealed class CollaborationTool : EditorWindow
             hover = { background = SolidTexture(new Color32(34, 37, 43, 255)), textColor = Color.white },
             fixedHeight = 30f,
             fontStyle = FontStyle.Bold,
-            border = new RectOffset(0, 0, 0, 0)
+            alignment = TextAnchor.MiddleCenter,
+            padding = new RectOffset(4, 4, 2, 2),
+            border = new RectOffset(0, 0, 0, 0),
+            contentOffset = Vector2.zero,
+            clipping = TextClipping.Overflow
         };
         tabActiveStyle = new GUIStyle(tabStyle)
         {
@@ -173,17 +177,19 @@ public sealed class CollaborationTool : EditorWindow
             normal = { background = SolidTexture(new Color32(41, 45, 52, 255)), textColor = new Color32(242, 244, 247, 255) },
             hover = { background = SolidTexture(new Color32(52, 58, 68, 255)), textColor = Color.white },
             alignment = TextAnchor.MiddleCenter,
-            padding = new RectOffset(12, 12, 4, 4),
+            padding = new RectOffset(12, 12, 2, 2),
             border = new RectOffset(0, 0, 0, 0),
             contentOffset = Vector2.zero,
-            fixedHeight = 0f,
-            stretchHeight = true
+            clipping = TextClipping.Overflow,
+            fixedHeight = 30f,
+            stretchHeight = false
         };
         leaveStyle = new GUIStyle(flatButtonStyle)
         {
             normal = { background = SolidTexture(new Color32(58, 34, 39, 255)), textColor = new Color32(255, 217, 220, 255) },
             hover = { background = SolidTexture(new Color32(82, 43, 50, 255)), textColor = Color.white },
-            fontStyle = FontStyle.Bold
+            fontStyle = FontStyle.Bold,
+            fixedHeight = 32f
         };
         fieldStyle = new GUIStyle(EditorStyles.textField)
         {
