@@ -1808,9 +1808,12 @@ internal class CollaborationSessionImplementation
             UpdateHash = commit.sha.Substring(0, Math.Min(7, commit.sha.Length));
             QueueUpdateStatus("Update available: " + UpdateHash);
         }
+        catch (WebException exception) when (IsExpectedNetworkFailure(exception.Status))
+        {
+            QueueUpdateStatus("Offline — update check skipped");
+        }
         catch (Exception exception)
         {
-            updating = false;
             Debug.LogWarning("Collaboration: could not check GitHub for updates: " + exception.Message);
             QueueUpdateStatus("Update check failed");
         }
@@ -1827,6 +1830,17 @@ internal class CollaborationSessionImplementation
             }
             else checkingForUpdate = false;
         }
+    }
+
+    private static bool IsExpectedNetworkFailure(WebExceptionStatus status)
+    {
+        return status == WebExceptionStatus.NameResolutionFailure ||
+               status == WebExceptionStatus.ProxyNameResolutionFailure ||
+               status == WebExceptionStatus.ConnectFailure ||
+               status == WebExceptionStatus.Timeout ||
+               status == WebExceptionStatus.ConnectionClosed ||
+               status == WebExceptionStatus.ReceiveFailure ||
+               status == WebExceptionStatus.SendFailure;
     }
 
     private void QueueUpdateStatus(string status)
