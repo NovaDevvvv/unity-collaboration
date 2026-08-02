@@ -147,6 +147,7 @@ export class CollaborationSession {
     const participant = socket.deserializeAttachment() || {};
     payload.id = participant.id;
     payload.name = participant.name;
+    payload.host = Boolean(participant.host);
     this.broadcast(payload);
   }
 

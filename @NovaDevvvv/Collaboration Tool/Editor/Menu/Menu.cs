@@ -158,9 +158,14 @@ public class Menu : EditorWindow
         public string id;
         public string name;
         public string message;
+        public bool host;
         public float px;
         public float py;
         public float pz;
+        public float qx;
+        public float qy;
+        public float qz;
+        public float qw;
     }
 
     [Serializable]
@@ -170,6 +175,7 @@ public class Menu : EditorWindow
         public string name;
         public Vector3 cameraPosition;
         public Quaternion cameraRotation;
+        public bool isHost;
         public long lastSeenTicks;
     }
 
@@ -851,17 +857,21 @@ public class Menu : EditorWindow
     private void PopulatePlayerList()
     {
         m_PlayerList.Clear();
+        string localName = string.IsNullOrWhiteSpace(m_LocalPlayerName)
+            ? Environment.UserName : m_LocalPlayerName.Trim();
         AddPlayerRow(
-            m_DisplayNameInput.value.Trim(),
+            localName,
             0,
-            GetPlayerColor(m_DisplayNameInput.value),
+            GetPlayerColor(localName),
             true);
         lock (m_PlayerLock)
         {
             foreach (RemotePlayer player in m_RemotePlayers.Values)
             {
                 if (player.id == m_LocalPlayerId) continue;
-                AddPlayerRow(player.name, 0, GetPlayerColor(player.name), false, player);
+                AddPlayerRow(
+                    player.name + (player.isHost ? " (Host)" : string.Empty),
+                    0, GetPlayerColor(player.name), false, player);
             }
         }
     }
@@ -881,7 +891,8 @@ public class Menu : EditorWindow
         color.AddToClassList("player-color");
         color.style.backgroundColor = playerColor;
 
-        Label name = new Label(isLocalPlayer ? $"{playerName} (Host)" : playerName);
+        string localSuffix = m_IsHost ? " (Host)" : " (You)";
+        Label name = new Label(isLocalPlayer ? playerName + localSuffix : playerName);
         name.AddToClassList("player-name");
 
         Label ping = new Label($"{pingMilliseconds} ms");
@@ -921,7 +932,9 @@ public class Menu : EditorWindow
         HideCustomMenus();
         m_ContextPlayerRow = playerRow;
         m_ContextPlayer = playerRow.userData as RemotePlayer;
-        m_KickPlayerButton.SetEnabled(m_IsHost && !isLocalPlayer);
+        m_KickPlayerButton.EnableInClassList("is-hidden", !m_IsHost);
+        m_KickPlayerButton.pickingMode = m_IsHost ? PickingMode.Position : PickingMode.Ignore;
+        m_KickPlayerButton.SetEnabled(m_IsHost);
         Vector2 localPosition = m_PlayerContextMenu.parent.WorldToLocal(panelPosition);
         m_PlayerContextMenu.style.left = localPosition.x;
         m_PlayerContextMenu.style.top = localPosition.y;
@@ -941,9 +954,14 @@ public class Menu : EditorWindow
         }
 
         menu.pickingMode = PickingMode.Position;
+        menu.style.display = DisplayStyle.Flex;
         menu.RemoveFromClassList("is-menu-hidden");
-        menu.Query<VisualElement>(className: "custom-menu-item").ForEach(
-            item => item.AddToClassList("is-revealed"));
+        menu.Query<VisualElement>(className: "custom-menu-item").ForEach(item =>
+        {
+            item.pickingMode = item.ClassListContains("is-hidden")
+                ? PickingMode.Ignore : PickingMode.Position;
+            item.AddToClassList("is-revealed");
+        });
     }
 
     private void HideCustomMenus()
@@ -962,8 +980,12 @@ public class Menu : EditorWindow
 
         menu.AddToClassList("is-menu-hidden");
         menu.pickingMode = PickingMode.Ignore;
-        menu.Query<VisualElement>(className: "custom-menu-item").ForEach(
-            item => item.RemoveFromClassList("is-revealed"));
+        menu.Query<VisualElement>(className: "custom-menu-item").ForEach(item =>
+        {
+            item.pickingMode = PickingMode.Ignore;
+            item.RemoveFromClassList("is-revealed");
+        });
+        menu.style.display = DisplayStyle.None;
     }
 
     private void CancelMenuRevealSchedules()
@@ -1199,6 +1221,7 @@ public class Menu : EditorWindow
 
     private void DrawSceneChatOverlay(SceneView sceneView)
     {
+        DrawRemoteCameraMarkers();
         if (string.IsNullOrEmpty(m_SceneChatOverlayMessage) ||
             EditorApplication.timeSinceStartup >= m_SceneChatOverlayExpiresAt)
         {
@@ -1242,6 +1265,38 @@ public class Menu : EditorWindow
             OpenChatAtSceneMessage();
         }
         Handles.EndGUI();
+    }
+
+    private void DrawRemoteCameraMarkers()
+    {
+        List<RemotePlayer> players;
+        lock (m_PlayerLock)
+            players = new List<RemotePlayer>(m_RemotePlayers.Values);
+
+        foreach (RemotePlayer player in players)
+        {
+            if (player.id == m_LocalPlayerId) continue;
+            float size = HandleUtility.GetHandleSize(player.cameraPosition) * 0.28f;
+            Color color = GetPlayerColor(player.name);
+            Handles.color = color;
+            Quaternion rotation = player.cameraRotation == default(Quaternion)
+                ? Quaternion.identity : player.cameraRotation;
+            Handles.ArrowHandleCap(
+                0, player.cameraPosition, rotation, size, EventType.Repaint);
+
+            GUIStyle labelStyle = new GUIStyle(EditorStyles.helpBox)
+            {
+                alignment = TextAnchor.MiddleCenter,
+                fontStyle = FontStyle.Bold,
+                fontSize = 11
+            };
+            labelStyle.normal.textColor = Color.white;
+            Handles.Label(
+                player.cameraPosition + Vector3.up * size * 0.75f,
+                player.name + (player.isHost ? " (Host)" : string.Empty),
+                labelStyle);
+        }
+        Handles.color = Color.white;
     }
 
     private Texture2D GetSceneBubbleTexture(bool isOwnMessage)
@@ -1668,6 +1723,7 @@ public class Menu : EditorWindow
 
     private void ShowJoinedLobby()
     {
+        m_IsHost = false;
         m_DisplayNameInput.value = m_LocalPlayerName;
         m_MainActions.AddToClassList("is-hidden");
         m_CreateServerModal.RemoveFromClassList("is-hidden");
@@ -1677,7 +1733,14 @@ public class Menu : EditorWindow
         m_LeaveSessionButton?.RemoveFromClassList("is-hidden");
         m_NameStep.AddToClassList("is-hidden"); m_WizardFooter.AddToClassList("is-hidden"); m_CreatingState.AddToClassList("is-hidden");
         m_ServerReadyState.RemoveFromClassList("is-hidden"); m_ServerReadyState.RemoveFromClassList("is-transparent");
-        m_ServerCodeField.value = m_ServerCode; PopulatePlayerList(); ShowServerTab(true);
+        m_MainTabContent.RemoveFromClassList("is-hidden");
+        m_MainTabContent.RemoveFromClassList("is-tab-transparent");
+        m_ChatTabContent.AddToClassList("is-hidden");
+        m_MainTabButton.EnableInClassList("is-selected", true);
+        m_ChatTabButton.EnableInClassList("is-selected", false);
+        m_TabSlider?.RemoveFromClassList("show-chat");
+        m_ServerCodeField.value = m_ServerCode;
+        PopulatePlayerList();
         StartRelayStateUpdates();
     }
 
@@ -1732,16 +1795,19 @@ public class Menu : EditorWindow
     {
         m_PlayerRefresh?.Pause();
         m_PlayerRefresh = m_ServerReadyState.schedule.Execute(
-            () => _ = SendCurrentRelayStateAsync()).Every(1500);
+            () => _ = SendCurrentRelayStateAsync()).Every(100);
     }
 
     private Task SendCurrentRelayStateAsync()
     {
-        Vector3 position = SceneView.lastActiveSceneView != null
-            ? SceneView.lastActiveSceneView.pivot : Vector3.zero;
+        SceneView view = SceneView.lastActiveSceneView;
+        Camera camera = view != null ? view.camera : null;
+        Vector3 position = camera != null ? camera.transform.position : Vector3.zero;
+        Quaternion rotation = camera != null ? camera.transform.rotation : Quaternion.identity;
         return SendRelayMessageAsync(new RelayMessage
         {
-            type = "state", px = position.x, py = position.y, pz = position.z
+            type = "state", px = position.x, py = position.y, pz = position.z,
+            qx = rotation.x, qy = rotation.y, qz = rotation.z, qw = rotation.w
         });
     }
 
@@ -1813,9 +1879,11 @@ public class Menu : EditorWindow
                 {
                     id = message.id, name = message.name ?? "Player",
                     cameraPosition = new Vector3(message.px, message.py, message.pz),
-                    cameraRotation = Quaternion.identity, lastSeenTicks = DateTime.UtcNow.Ticks
+                    cameraRotation = new Quaternion(message.qx, message.qy, message.qz, message.qw),
+                    isHost = message.host, lastSeenTicks = DateTime.UtcNow.Ticks
                 };
             PopulatePlayerList();
+            SceneView.RepaintAll();
         }
     }
 
