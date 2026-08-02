@@ -1155,3 +1155,24 @@
 .danger-menu-item:hover {
     background-color: rgb(138, 42, 51);
 }
+
+/* Visual feedback must never move the geometry Unity uses for pointer picking. */
+.content-overlay .unity-button,
+.content-overlay .unity-button:hover,
+.content-overlay .unity-button:active {
+    translate: 0 0;
+    scale: 1 1;
+}
+
+.custom-context-menu,
+.custom-context-menu.is-menu-hidden {
+    translate: 0 0;
+    scale: 1 1;
+    transition-property: opacity;
+}
+
+.custom-menu-item,
+.custom-menu-item.is-revealed {
+    translate: 0 0;
+    transition-property: opacity, background-color;
+}

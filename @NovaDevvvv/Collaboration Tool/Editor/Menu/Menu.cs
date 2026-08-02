@@ -254,7 +254,7 @@ public class Menu : EditorWindow
         root.Q<Button>("close-server-button").clicked += RequestCloseRunningServer;
         root.Q<Button>("app-menu-button").clicked += ToggleServerContextMenu;
         root.Q<Button>("app-settings-button").clicked += ShowSettings;
-        root.Q<Button>("refresh-installation-button").clicked += () => CheckForUpdates(true);
+        root.Q<Button>("refresh-installation-button").clicked += RequestInstallationRefresh;
         root.Q<Button>("settings-back-button").clicked += HideSettings;
         root.Q<Button>("theme-light-button").clicked += () => ApplyTheme("light");
         root.Q<Button>("theme-dark-button").clicked += () => ApplyTheme("dark");
@@ -317,6 +317,19 @@ public class Menu : EditorWindow
     {
         m_SettingsPage.AddToClassList("is-hidden");
         m_NextAutomaticUpdateCheck = EditorApplication.timeSinceStartup + 15d;
+    }
+
+    private void RequestInstallationRefresh()
+    {
+        HideCustomMenus();
+        if (EditorUtility.DisplayDialog(
+                "Refresh Collaboration Installation",
+                "Check GitHub and reinstall the latest Collaboration version? Unity will reload scripts.",
+                "Refresh Installation",
+                "Cancel"))
+        {
+            CheckForUpdates(true);
+        }
     }
 
     private void AutomaticUpdateTick()
@@ -851,16 +864,8 @@ public class Menu : EditorWindow
 
         menu.pickingMode = PickingMode.Position;
         menu.RemoveFromClassList("is-menu-hidden");
-        List<VisualElement> items = menu.Query<VisualElement>(className: "custom-menu-item").ToList();
-        for (int index = 0; index < items.Count; index++)
-        {
-            VisualElement item = items[index];
-            IVisualElementScheduledItem reveal = menu.schedule.Execute(() =>
-            {
-                item.AddToClassList("is-revealed");
-            }).StartingIn(35 + index * 65);
-            m_MenuRevealSchedules.Add(reveal);
-        }
+        menu.Query<VisualElement>(className: "custom-menu-item").ForEach(
+            item => item.AddToClassList("is-revealed"));
     }
 
     private void HideCustomMenus()
@@ -1440,9 +1445,6 @@ public class Menu : EditorWindow
             return;
         }
 
-        m_IsConnecting = true;
-        m_ConnectButton.tooltip = "Connecting...";
-        SwapIcon(HourglassIcon, StartConnectingWait);
         string enteredCode = rootVisualElement.Q<TextField>("server-code-input").value?.Trim();
         try
         {
@@ -1454,13 +1456,33 @@ public class Menu : EditorWindow
             m_ServerCode = enteredCode;
             m_IsHost = false;
             m_LocalPlayerName = Environment.UserName;
-            string snapshot = await SendHeartbeatAsync("join");
-            ApplyRemoteSnapshot(snapshot);
-            ShowJoinedLobby();
         }
         catch (Exception exception)
         {
             m_ConnectButton.tooltip = "Could not connect: " + exception.Message;
+            UnityEngine.Debug.LogWarning("Could not read the Collaboration server code: " + exception.Message);
+            return;
+        }
+
+        m_IsConnecting = true;
+        m_ConnectButton.tooltip = "Connecting...";
+        SwapIcon(HourglassIcon, StartConnectingWait);
+        try
+        {
+            string snapshot = await SendHeartbeatAsync("join");
+            ShowUpdateOverlay("Server found", "Loading collaboration session...");
+            await Task.Delay(350);
+            ApplyRemoteSnapshot(snapshot);
+            ShowJoinedLobby();
+            HideUpdateOverlay();
+            EndConnecting();
+        }
+        catch (Exception exception)
+        {
+            string failure = "Could not connect: " + exception.Message;
+            UnityEngine.Debug.LogWarning("Could not connect to the Collaboration server: " + exception.Message);
+            EndConnecting();
+            m_ConnectButton.schedule.Execute(() => m_ConnectButton.tooltip = failure).StartingIn(500);
         }
     }
 
@@ -1473,7 +1495,8 @@ public class Menu : EditorWindow
             "&px=" + position.x.ToString(invariant, System.Globalization.CultureInfo.InvariantCulture) +
             "&py=" + position.y.ToString(invariant, System.Globalization.CultureInfo.InvariantCulture) +
             "&pz=" + position.z.ToString(invariant, System.Globalization.CultureInfo.InvariantCulture);
-        using (WebClient client = new WebClient()) return await client.DownloadStringTaskAsync(url);
+        using (WebClient client = new TimeoutWebClient())
+            return await client.DownloadStringTaskAsync(url);
     }
 
     private void ShowJoinedLobby()
@@ -1516,7 +1539,8 @@ public class Menu : EditorWindow
         m_HourglassRotation = m_ConnectIcon.schedule.Execute(AdvanceHourglassRotation)
             .StartingIn(20)
             .Every(1350);
-        m_ConnectCompletion = m_ConnectIcon.schedule.Execute(EndConnecting).StartingIn(2050);
+        m_ConnectCompletion?.Pause();
+        m_ConnectCompletion = null;
     }
 
     private void AdvanceHourglassRotation()
