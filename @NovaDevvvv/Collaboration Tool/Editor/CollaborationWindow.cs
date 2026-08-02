@@ -28,6 +28,8 @@ public sealed class CollaborationTool : EditorWindow
     private string serverLink = "";
     private string chatText = "";
     private string githubPatInput = "";
+    private bool homeMenuOpen;
+    private string selectedTheme = "Extra Dark";
     private Vector2 chatScroll;
     private Vector2 playersScroll;
     private int sessionTab;
@@ -43,7 +45,10 @@ public sealed class CollaborationTool : EditorWindow
     private GUIStyle fieldStyle;
     private GUIStyle flatButtonStyle;
     private GUIStyle chatPanelStyle;
-    private static readonly Color WindowBackground = new Color32(23, 25, 29, 255);
+    private GUIStyle sendStyle;
+    private Color WindowBackground => selectedTheme == "Light" ? new Color32(226, 228, 233, 255) :
+        selectedTheme == "Dark" ? new Color32(43, 46, 53, 255) :
+        selectedTheme == "Midnight" ? new Color32(8, 16, 34, 255) : new Color32(23, 25, 29, 255);
 
     [MenuItem("Collaborate/Window")]
     private static void OpenWindow()
@@ -63,6 +68,7 @@ public sealed class CollaborationTool : EditorWindow
 
     private void OnEnable()
     {
+        selectedTheme = EditorPrefs.GetString("NovaDev.UnityCollaboration.Theme", "Extra Dark");
         ResetStyles();
         titleContent = new GUIContent("Collaboration");
         Session.Changed -= Repaint;
@@ -89,6 +95,7 @@ public sealed class CollaborationTool : EditorWindow
         fieldStyle = null;
         flatButtonStyle = null;
         chatPanelStyle = null;
+        sendStyle = null;
     }
 
     private void OnDisable()
@@ -148,7 +155,7 @@ public sealed class CollaborationTool : EditorWindow
     {
         if (titleStyle != null && panelStyle != null && tabStyle != null && tabActiveStyle != null &&
             tabContainerStyle != null && leaveStyle != null && fieldStyle != null && flatButtonStyle != null &&
-            chatPanelStyle != null) return;
+            chatPanelStyle != null && sendStyle != null) return;
         titleStyle = CollaborationStyles.Title();
         subtitleStyle = new GUIStyle(EditorStyles.label)
         {
@@ -203,10 +210,15 @@ public sealed class CollaborationTool : EditorWindow
         };
         leaveStyle = new GUIStyle(flatButtonStyle)
         {
-            normal = { background = SolidTexture(new Color32(58, 34, 39, 255)), textColor = new Color32(255, 217, 220, 255) },
-            hover = { background = SolidTexture(new Color32(82, 43, 50, 255)), textColor = Color.white },
+            normal = { background = SolidTexture(new Color32(41, 45, 52, 255)), textColor = new Color32(242, 244, 247, 255) },
+            hover = { background = SolidTexture(new Color32(138, 42, 51, 255)), textColor = Color.white },
             fontStyle = FontStyle.Bold,
             fixedHeight = 32f
+        };
+        sendStyle = new GUIStyle(flatButtonStyle)
+        {
+            normal = { background = SolidTexture(new Color32(46, 116, 235, 255)), textColor = Color.white },
+            hover = { background = SolidTexture(new Color32(62, 132, 250, 255)), textColor = Color.white }
         };
         fieldStyle = new GUIStyle(EditorStyles.textField)
         {
@@ -307,6 +319,7 @@ public sealed class CollaborationTool : EditorWindow
 
         if (page == Page.Home)
         {
+            DrawHomeHamburger();
             using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
             {
                 GUILayout.Space(8f);
@@ -320,25 +333,6 @@ public sealed class CollaborationTool : EditorWindow
             }
             DrawError();
             GUILayout.FlexibleSpace();
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                using (new EditorGUI.DisabledScope(Session.CheckingForUpdate))
-                {
-                    string updateButton = Session.CheckingForUpdate ? "Checking…" :
-                        (Session.UpdateAvailable ? "Update to " + Session.UpdateHash : "↻  Check for Updates");
-                    if (GUILayout.Button(updateButton, GUILayout.Width(145f), GUILayout.Height(25f)))
-                    {
-                        if (Session.UpdateAvailable) Session.InstallAvailableUpdate();
-                        else Session.CheckForUpdatesNow();
-                    }
-                }
-                GUILayout.FlexibleSpace();
-                if (GUILayout.Button("Settings", GUILayout.Width(80f), GUILayout.Height(25f)))
-                {
-                    githubPatInput = Session.GitHubPat;
-                    page = Page.Settings;
-                }
-            }
             return;
         }
 
@@ -381,6 +375,35 @@ public sealed class CollaborationTool : EditorWindow
         DrawError();
     }
 
+    private void DrawHomeHamburger()
+    {
+        using (new EditorGUILayout.HorizontalScope())
+        {
+            GUILayout.FlexibleSpace();
+            if (GUILayout.Button("☰", flatButtonStyle, GUILayout.Width(34f), GUILayout.Height(30f)))
+                homeMenuOpen = !homeMenuOpen;
+        }
+        if (!homeMenuOpen) return;
+        using (new EditorGUILayout.VerticalScope(panelStyle))
+        {
+            if (GUILayout.Button("Settings", flatButtonStyle))
+            {
+                githubPatInput = Session.GitHubPat;
+                page = Page.Settings;
+                homeMenuOpen = false;
+            }
+            using (new EditorGUI.DisabledScope(Session.CheckingForUpdate || Session.Updating))
+            {
+                if (GUILayout.Button(Session.CheckingForUpdate ? "Checking…" : "Check for Updates", flatButtonStyle))
+                {
+                    Session.CheckForUpdatesNow();
+                    homeMenuOpen = false;
+                }
+            }
+        }
+        GUILayout.Space(8f);
+    }
+
     private void DrawSettings()
     {
         using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
@@ -388,6 +411,17 @@ public sealed class CollaborationTool : EditorWindow
             GUILayout.Space(6f);
             EditorGUILayout.LabelField("Settings", EditorStyles.boldLabel);
             GUILayout.Space(8f);
+            EditorGUILayout.LabelField("Theme", EditorStyles.miniBoldLabel);
+            string[] themes = { "Extra Dark", "Dark", "Light", "Midnight" };
+            int themeIndex = Mathf.Max(0, Array.IndexOf(themes, selectedTheme));
+            int nextThemeIndex = EditorGUILayout.Popup(themeIndex, themes);
+            if (nextThemeIndex != themeIndex)
+            {
+                selectedTheme = themes[nextThemeIndex];
+                EditorPrefs.SetString("NovaDev.UnityCollaboration.Theme", selectedTheme);
+                ResetStyles();
+            }
+            GUILayout.Space(10f);
             EditorGUILayout.LabelField("GitHub personal access token", EditorStyles.miniBoldLabel);
             githubPatInput = EditorGUILayout.PasswordField(githubPatInput ?? "");
             EditorGUILayout.LabelField(
@@ -467,6 +501,20 @@ public sealed class CollaborationTool : EditorWindow
                     if (Session.IsHost && !player.IsHost && GUILayout.Button("Kick", flatButtonStyle, GUILayout.Width(48f), GUILayout.Height(24f)))
                         Session.Kick(player.Id);
                 }
+                Rect playerRow = GUILayoutUtility.GetLastRect();
+                if (player.Id != Session.LocalId && Event.current.type == EventType.ContextClick &&
+                    playerRow.Contains(Event.current.mousePosition))
+                {
+                    CollaborationPlayer selectedPlayer = player;
+                    GenericMenu context = new GenericMenu();
+                    if (selectedPlayer.HasCameraPose)
+                        context.AddItem(new GUIContent("Go To"), false, () => GoToPlayer(selectedPlayer));
+                    else context.AddDisabledItem(new GUIContent("Go To"));
+                    if (Session.IsHost && !selectedPlayer.IsHost)
+                        context.AddItem(new GUIContent("Kick"), false, () => Session.Kick(selectedPlayer.Id));
+                    context.ShowAsContext();
+                    Event.current.Use();
+                }
                 GUILayout.Space(3f);
             }
             EditorGUILayout.EndScrollView();
@@ -493,7 +541,7 @@ public sealed class CollaborationTool : EditorWindow
                 chatText = EditorGUILayout.TextField(chatText, fieldStyle);
                 bool enter = Event.current.type == EventType.KeyDown && Event.current.keyCode == KeyCode.Return &&
                              GUI.GetNameOfFocusedControl() == "CollaborationChat";
-                if ((GUILayout.Button("Send", flatButtonStyle, GUILayout.Width(55f), GUILayout.Height(30f)) || enter) && !string.IsNullOrWhiteSpace(chatText))
+                if ((GUILayout.Button("Send", sendStyle, GUILayout.Width(55f), GUILayout.Height(30f)) || enter) && !string.IsNullOrWhiteSpace(chatText))
                 {
                     Session.SendChat(chatText.Trim());
                     chatText = "";
@@ -518,6 +566,15 @@ public sealed class CollaborationTool : EditorWindow
             GUILayout.FlexibleSpace();
             GUILayout.Label(Session.PacketsSent + " packets sent  •  " + Session.PacketsReceived + " received", EditorStyles.miniLabel);
         }
+    }
+
+    private static void GoToPlayer(CollaborationPlayer player)
+    {
+        SceneView view = SceneView.lastActiveSceneView;
+        if (view == null || player == null || !player.HasCameraPose) return;
+        view.pivot = player.CameraPosition;
+        view.rotation = player.CameraRotation;
+        view.Repaint();
     }
 
     private void DrawError()
@@ -2144,7 +2201,8 @@ internal class CollaborationSessionImplementation
 
             availableUpdateCommit = commit.sha;
             UpdateHash = commit.sha.Substring(0, Math.Min(7, commit.sha.Length));
-            QueueUpdateStatus("Update available: " + UpdateHash);
+            QueueUpdateStatus("Downloading update: " + UpdateHash);
+            mainThread.Enqueue(InstallAvailableUpdate);
         }
         catch (WebException exception) when (IsExpectedNetworkFailure(exception.Status))
         {
