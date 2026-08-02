@@ -451,7 +451,8 @@ public class Menu : EditorWindow
 
         EditorPrefs.SetString(InstalledCommitPreferenceKey, commit);
         SessionState.SetString(PendingUpdateCommitKey, commit);
-        SetUpdateOverlayStatus("Version " + shortCommit + " installed. Reloading scripts...");
+        SetUpdateStatus("Version " + shortCommit + " installed. Reloading scripts...");
+        HideUpdateOverlayImmediately();
         AssetDatabase.Refresh(ImportAssetOptions.ForceUpdate);
     }
 
@@ -487,6 +488,16 @@ public class Menu : EditorWindow
         StopUpdateSpinner();
         m_UpdateOverlay.AddToClassList("is-transparent");
         m_UpdateOverlay.schedule.Execute(() => m_UpdateOverlay.AddToClassList("is-hidden")).StartingIn(220);
+    }
+
+    private void HideUpdateOverlayImmediately()
+    {
+        StopUpdateSpinner();
+        if (m_UpdateOverlay == null)
+            return;
+        m_UpdateOverlay.AddToClassList("is-transparent");
+        m_UpdateOverlay.AddToClassList("is-hidden");
+        Repaint();
     }
 
     private void SetUpdateOverlayStatus(string status)
