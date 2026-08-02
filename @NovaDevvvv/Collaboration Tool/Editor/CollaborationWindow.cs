@@ -75,8 +75,8 @@ public sealed class CollaborationTool : EditorWindow
         Session.Changed += Repaint;
         SceneView.duringSceneGui -= OnSceneGUI;
         SceneView.duringSceneGui += OnSceneGUI;
-        EditorApplication.hierarchyWindowItemOnGUI -= OnHierarchyItemGUI;
-        EditorApplication.hierarchyWindowItemOnGUI += OnHierarchyItemGUI;
+        EditorApplication.hierarchyWindowItemByEntityIdOnGUI -= OnHierarchyItemGUI;
+        EditorApplication.hierarchyWindowItemByEntityIdOnGUI += OnHierarchyItemGUI;
         if (Session.Connected)
             page = Page.Session;
     }
@@ -102,7 +102,7 @@ public sealed class CollaborationTool : EditorWindow
     {
         Session.Changed -= Repaint;
         SceneView.duringSceneGui -= OnSceneGUI;
-        EditorApplication.hierarchyWindowItemOnGUI -= OnHierarchyItemGUI;
+        EditorApplication.hierarchyWindowItemByEntityIdOnGUI -= OnHierarchyItemGUI;
     }
 
     private void OnGUI()
@@ -644,10 +644,10 @@ public sealed class CollaborationTool : EditorWindow
         return true;
     }
 
-    private static void OnHierarchyItemGUI(int instanceId, Rect rect)
+    private static void OnHierarchyItemGUI(EntityId entityId, Rect rect)
     {
         OnGlobalEditorEvent();
-        if (!Session.Connected || !Session.TryGetSelectionColor(instanceId, out Color color)) return;
+        if (!Session.Connected || !Session.TryGetSelectionColor(entityId, out Color color)) return;
         Rect marker = new Rect(rect.xMax - 10f, rect.y + (rect.height - 7f) * 0.5f, 7f, 7f);
         EditorGUI.DrawRect(marker, color);
     }
@@ -2046,12 +2046,12 @@ internal class CollaborationSessionImplementation
         return gameObject.GetComponents<Component>().Any(item => item != null && lockedObjectFlags.ContainsKey(item));
     }
 
-    public bool TryGetSelectionColor(int instanceId, out Color color)
+    public bool TryGetSelectionColor(EntityId entityId, out Color color)
     {
         foreach (CollaborationPlayer player in players)
         {
             GameObject selected = ResolveGameObject(player.SelectedObjectId);
-            if (selected == null || selected.GetInstanceID() != instanceId) continue;
+            if (selected == null || selected.GetEntityId() != entityId) continue;
             color = player.Color;
             return true;
         }
