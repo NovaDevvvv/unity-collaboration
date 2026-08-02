@@ -28,6 +28,7 @@ public class Menu : EditorWindow
     private const string InstalledCommitPreferenceKey = "NovaCollaboration.InstalledCommit";
     private const string PendingUpdateCommitKey = "NovaCollaboration.PendingUpdateCommit";
     private const string CollaborationApiUrl = "https://collaborate.novaa.dev";
+    private const string CollaborationFallbackApiUrl = "https://collaboration-relay.novaa.dev";
     private const string LatestCommitUrl =
         "https://api.github.com/repos/novadevvvv/unity-collaboration/commits/main";
     private const string DownloadUrl =
@@ -134,6 +135,7 @@ public class Menu : EditorWindow
     private CancellationTokenSource m_RelayCancellation;
     private readonly SemaphoreSlim m_RelaySendLock = new SemaphoreSlim(1, 1);
     private string m_RelayHostToken;
+    private string m_ActiveCollaborationApiUrl = CollaborationApiUrl;
 
     [Serializable]
     private sealed class CreateSessionRequest { public string name; }
@@ -1298,13 +1300,26 @@ public class Menu : EditorWindow
         try
         {
             m_CreatingStatus.text = "Requesting session...";
-            string responseJson;
-            using (WebClient client = new TimeoutWebClient(15000))
+            string responseJson = null;
+            foreach (string apiUrl in new[] { CollaborationApiUrl, CollaborationFallbackApiUrl })
             {
-                client.Headers[HttpRequestHeader.ContentType] = "application/json";
-                string body = JsonUtility.ToJson(new CreateSessionRequest { name = m_LocalPlayerName });
-                responseJson = await client.UploadStringTaskAsync(
-                    CollaborationApiUrl + "/v1/create", "POST", body);
+                try
+                {
+                    using (WebClient client = new TimeoutWebClient(15000))
+                    {
+                        client.Headers[HttpRequestHeader.ContentType] = "application/json";
+                        string body = JsonUtility.ToJson(new CreateSessionRequest { name = m_LocalPlayerName });
+                        responseJson = await client.UploadStringTaskAsync(apiUrl + "/v1/create", "POST", body);
+                        m_ActiveCollaborationApiUrl = apiUrl;
+                        break;
+                    }
+                }
+                catch (WebException exception)
+                {
+                    if (apiUrl == CollaborationFallbackApiUrl ||
+                        exception.Status != WebExceptionStatus.NameResolutionFailure)
+                        throw;
+                }
             }
 
             CreateSessionResponse response = JsonUtility.FromJson<CreateSessionResponse>(responseJson);
@@ -1633,15 +1648,37 @@ public class Menu : EditorWindow
     private async Task ConnectRelayAsync(string code, string name, string hostToken = null)
     {
         StopRelaySocket();
-        m_RelayCancellation = new CancellationTokenSource();
-        m_RelaySocket = new ClientWebSocket();
-        string url = CollaborationApiUrl.Replace("https://", "wss://") +
-            "/v1/connect?code=" + Uri.EscapeDataString(code) +
-            "&name=" + Uri.EscapeDataString(name) +
-            "&id=" + Uri.EscapeDataString(m_LocalPlayerId) +
-            (string.IsNullOrEmpty(hostToken) ? string.Empty :
-                "&hostToken=" + Uri.EscapeDataString(hostToken));
-        await m_RelaySocket.ConnectAsync(new Uri(url), m_RelayCancellation.Token);
+        Exception lastFailure = null;
+        string[] candidates = m_ActiveCollaborationApiUrl == CollaborationFallbackApiUrl
+            ? new[] { CollaborationFallbackApiUrl }
+            : new[] { CollaborationApiUrl, CollaborationFallbackApiUrl };
+        foreach (string apiUrl in candidates)
+        {
+            try
+            {
+                m_RelayCancellation = new CancellationTokenSource();
+                m_RelaySocket = new ClientWebSocket();
+                string url = apiUrl.Replace("https://", "wss://") +
+                    "/v1/connect?code=" + Uri.EscapeDataString(code) +
+                    "&name=" + Uri.EscapeDataString(name) +
+                    "&id=" + Uri.EscapeDataString(m_LocalPlayerId) +
+                    (string.IsNullOrEmpty(hostToken) ? string.Empty :
+                        "&hostToken=" + Uri.EscapeDataString(hostToken));
+                await m_RelaySocket.ConnectAsync(new Uri(url), m_RelayCancellation.Token);
+                m_ActiveCollaborationApiUrl = apiUrl;
+                lastFailure = null;
+                break;
+            }
+            catch (Exception exception)
+            {
+                lastFailure = exception;
+                m_RelaySocket?.Dispose();
+                m_RelaySocket = null;
+                m_RelayCancellation?.Dispose();
+                m_RelayCancellation = null;
+            }
+        }
+        if (lastFailure != null) throw lastFailure;
         _ = ReceiveRelayLoopAsync(m_RelaySocket, m_RelayCancellation.Token);
         await SendCurrentRelayStateAsync();
     }

@@ -8,6 +8,10 @@
     {
       "pattern": "collaborate.novaa.dev",
       "custom_domain": true
+    },
+    {
+      "pattern": "collaboration-relay.novaa.dev",
+      "custom_domain": true
     }
   ],
   "durable_objects": {
