@@ -118,6 +118,10 @@
 				<engine:Label text="&#xf021;" class="custom-menu-icon" picking-mode="Ignore" />
 				<engine:Label text="Refresh installation" class="custom-menu-label" picking-mode="Ignore" />
 			</engine:Button>
+			<engine:Button name="leave-session-button" class="custom-menu-item danger-menu-item is-hidden">
+				<engine:Label text="&#xf2f5;" class="custom-menu-icon" picking-mode="Ignore" />
+				<engine:Label text="Leave Session" class="custom-menu-label" picking-mode="Ignore" />
+			</engine:Button>
 			<engine:Button name="close-server-button" class="custom-menu-item danger-menu-item last-menu-item is-hidden">
 				<engine:Label text="&#xf011;" class="custom-menu-icon" picking-mode="Ignore" />
 				<engine:Label text="Close Server" class="custom-menu-label" picking-mode="Ignore" />

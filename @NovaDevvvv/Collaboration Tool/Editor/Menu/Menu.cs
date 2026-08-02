@@ -100,6 +100,7 @@ public class Menu : EditorWindow
     private RemotePlayer m_ContextPlayer;
     private Button m_WizardNextButton;
     private Button m_CloseServerButton;
+    private Button m_LeaveSessionButton;
     private bool m_IsConnecting;
     private float m_HourglassRotationDegrees;
     private float m_LoadingWheelDegrees;
@@ -136,6 +137,8 @@ public class Menu : EditorWindow
     private readonly SemaphoreSlim m_RelaySendLock = new SemaphoreSlim(1, 1);
     private string m_RelayHostToken;
     private string m_ActiveCollaborationApiUrl = CollaborationApiUrl;
+    private long m_ServerLoadingStartedTicks;
+    private long m_ConnectLoadingStartedTicks;
 
     [Serializable]
     private sealed class CreateSessionRequest { public string name; }
@@ -285,11 +288,13 @@ public class Menu : EditorWindow
         m_GoToPlayerButton = root.Q<Button>("goto-player-button");
         m_WizardNextButton = root.Q<Button>("wizard-next-button");
         m_CloseServerButton = root.Q<Button>("close-server-button");
+        m_LeaveSessionButton = root.Q<Button>("leave-session-button");
 
         root.Q<Button>("create-server-button").clicked += OpenCreateServerFlow;
         root.Q<Button>("wizard-cancel-button").clicked += CloseCreateServerFlow;
         root.Q<Button>("creating-server-cancel-button").clicked += CancelServerCreation;
         root.Q<Button>("close-server-button").clicked += RequestCloseRunningServer;
+        m_LeaveSessionButton.clicked += LeaveJoinedSession;
         root.Q<Button>("app-menu-button").clicked += ToggleServerContextMenu;
         root.Q<Button>("app-settings-button").clicked += ShowSettings;
         root.Q<Button>("refresh-installation-button").clicked += RequestInstallationRefresh;
@@ -675,6 +680,7 @@ public class Menu : EditorWindow
                 };
             }
             m_CreatingState.RemoveFromClassList("is-hidden");
+            m_ServerLoadingStartedTicks = DateTime.UtcNow.Ticks;
             StartLoadingWheel();
             m_StartTunnelScheduled = m_CreatingState.schedule.Execute(() =>
             {
@@ -728,6 +734,7 @@ public class Menu : EditorWindow
         StopServer();
         m_IsHost = false;
         m_CloseServerButton?.AddToClassList("is-hidden");
+        m_LeaveSessionButton?.AddToClassList("is-hidden");
         m_PlayerRefresh?.Pause();
         m_PlayerRefresh = null;
         CloseCreateServerFlow();
@@ -745,6 +752,26 @@ public class Menu : EditorWindow
         {
             CloseRunningServer();
         }
+    }
+
+    private void LeaveJoinedSession()
+    {
+        HideCustomMenus();
+        StopServer();
+        m_PlayerRefresh?.Pause();
+        m_PlayerRefresh = null;
+        lock (m_PlayerLock) m_RemotePlayers.Clear();
+        m_IsHost = false;
+        m_LeaveSessionButton?.AddToClassList("is-hidden");
+        m_CloseServerButton?.AddToClassList("is-hidden");
+        m_ServerReadyState.AddToClassList("is-transparent");
+        m_ServerReadyState.AddToClassList("is-hidden");
+        m_CreateServerModal.AddToClassList("is-transparent");
+        m_CreateServerModal.AddToClassList("is-hidden");
+        m_CreateServerModal.RemoveFromClassList("server-dashboard");
+        m_MainActions.RemoveFromClassList("is-hidden");
+        m_MainActions.schedule.Execute(() =>
+            m_MainActions.RemoveFromClassList("is-transparent")).StartingIn(20);
     }
 
     private void CopyServerCode()
@@ -1329,10 +1356,13 @@ public class Menu : EditorWindow
             m_CreatingStatus.text = "Opening secure session...";
             m_RelayHostToken = response.hostToken;
             await ConnectRelayAsync(response.code, m_LocalPlayerName, m_RelayHostToken);
+            await EnsureMinimumLoadingTime(m_ServerLoadingStartedTicks);
             ShowSessionReady(response.code);
         }
         catch (Exception exception)
         {
+            await EnsureMinimumLoadingTime(m_ServerLoadingStartedTicks);
+            StopLoadingWheel();
             ShowTunnelError(exception.Message);
             StopServer();
         }
@@ -1353,6 +1383,7 @@ public class Menu : EditorWindow
                 ShowServerTab(true);
                 m_CreateServerModal.AddToClassList("server-dashboard");
                 m_CloseServerButton?.RemoveFromClassList("is-hidden");
+                m_LeaveSessionButton?.AddToClassList("is-hidden");
                 m_ServerReadyState.RemoveFromClassList("is-hidden");
                 m_ServerReadyState.schedule.Execute(() =>
                     m_ServerReadyState.RemoveFromClassList("is-transparent")).StartingIn(20);
@@ -1594,19 +1625,22 @@ public class Menu : EditorWindow
         }
 
         m_IsConnecting = true;
+        m_ConnectLoadingStartedTicks = DateTime.UtcNow.Ticks;
         m_ConnectButton.tooltip = "Connecting...";
         SwapIcon(HourglassIcon, StartConnectingWait);
         try
         {
             await ConnectRelayAsync(m_ServerCode, m_LocalPlayerName);
+            await EnsureMinimumLoadingTime(m_ConnectLoadingStartedTicks);
             ShowUpdateOverlay("Server found", "Loading collaboration session...");
-            await Task.Delay(350);
+            await Task.Delay(2000);
             ShowJoinedLobby();
             HideUpdateOverlay();
             EndConnecting();
         }
         catch (Exception exception)
         {
+            await EnsureMinimumLoadingTime(m_ConnectLoadingStartedTicks);
             string detail = exception is WebException webException &&
                 webException.Response is HttpWebResponse response &&
                 response.StatusCode == HttpStatusCode.NotFound
@@ -1637,12 +1671,23 @@ public class Menu : EditorWindow
         m_DisplayNameInput.value = m_LocalPlayerName;
         m_MainActions.AddToClassList("is-hidden");
         m_CreateServerModal.RemoveFromClassList("is-hidden");
+        m_CreateServerModal.RemoveFromClassList("is-transparent");
         m_CreateServerModal.AddToClassList("server-dashboard");
         m_CloseServerButton?.AddToClassList("is-hidden");
+        m_LeaveSessionButton?.RemoveFromClassList("is-hidden");
         m_NameStep.AddToClassList("is-hidden"); m_WizardFooter.AddToClassList("is-hidden"); m_CreatingState.AddToClassList("is-hidden");
         m_ServerReadyState.RemoveFromClassList("is-hidden"); m_ServerReadyState.RemoveFromClassList("is-transparent");
         m_ServerCodeField.value = m_ServerCode; PopulatePlayerList(); ShowServerTab(true);
         StartRelayStateUpdates();
+    }
+
+    private static async Task EnsureMinimumLoadingTime(long startedTicks)
+    {
+        if (startedTicks <= 0) return;
+        TimeSpan elapsed = TimeSpan.FromTicks(DateTime.UtcNow.Ticks - startedTicks);
+        TimeSpan remaining = TimeSpan.FromSeconds(2) - elapsed;
+        if (remaining > TimeSpan.Zero)
+            await Task.Delay(remaining);
     }
 
     private async Task ConnectRelayAsync(string code, string name, string hostToken = null)
