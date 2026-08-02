@@ -23,6 +23,28 @@ public class Menu : EditorWindow
     private const string EyeIcon = "\uf06e";
     private const string EyeSlashIcon = "\uf070";
     private const string ThemePreferenceKey = "NovaCollaboration.Theme";
+    private const string GithubPatPreferenceKey = "NovaCollaboration.GithubPat";
+    private const string InstalledCommitPreferenceKey = "NovaCollaboration.InstalledCommit";
+    private const string LatestCommitUrl =
+        "https://api.github.com/repos/novadevvvv/unity-collaboration/commits/main";
+    private const string DownloadUrl =
+        "https://raw.githubusercontent.com/novadevvvv/unity-collaboration/{0}/%40NovaDevvvv/Collaboration%20Tool/{1}";
+    private static readonly string[] UpdateFiles =
+    {
+        "Editor.meta",
+        "Editor/Menu.meta",
+        "Editor/Menu/Menu.cs",
+        "Editor/Menu/Menu.cs.meta",
+        "Editor/Menu/Menu.uss",
+        "Editor/Menu/Menu.uss.meta",
+        "Editor/Menu/Menu.uxml",
+        "Editor/Menu/Menu.uxml.meta",
+        "Editor/Menu/Fonts.meta",
+        "Editor/Menu/Fonts/Font Awesome 6 Free-Solid-900.otf",
+        "Editor/Menu/Fonts/Font Awesome 6 Free-Solid-900.otf.meta",
+        "Editor/Menu/Fonts/Font Awesome LICENSE.txt",
+        "Editor/Menu/Fonts/Font Awesome LICENSE.txt.meta"
+    };
     private const string CloudflaredPath =
         @"C:\Program Files (x86)\cloudflared\cloudflared.exe";
     private const string MenuAssetFolder =
@@ -42,6 +64,7 @@ public class Menu : EditorWindow
     private IVisualElementScheduledItem m_StartTunnelScheduled;
     private IVisualElementScheduledItem m_CopyIconReset;
     private IVisualElementScheduledItem m_TabTransition;
+    private IVisualElementScheduledItem m_UpdateSpinnerAnimation;
     private readonly List<IVisualElementScheduledItem> m_MenuRevealSchedules =
         new List<IVisualElementScheduledItem>();
     private Button m_ConnectButton;
@@ -69,14 +92,23 @@ public class Menu : EditorWindow
     private TextField m_ChatMessageInput;
     private VisualElement m_ServerContextMenu;
     private VisualElement m_PlayerContextMenu;
+    private VisualElement m_UpdateOverlay;
+    private VisualElement m_UpdateSpinner;
+    private Label m_UpdateLoadingStatus;
+    private Label m_UpdateStatusLabel;
+    private TextField m_GithubPatField;
     private Button m_KickPlayerButton;
     private Button m_GoToPlayerButton;
     private VisualElement m_ContextPlayerRow;
     private RemotePlayer m_ContextPlayer;
     private Button m_WizardNextButton;
+    private Button m_CloseServerButton;
     private bool m_IsConnecting;
     private float m_HourglassRotationDegrees;
     private float m_LoadingWheelDegrees;
+    private float m_UpdateSpinnerDegrees;
+    private bool m_UpdateCheckRunning;
+    private double m_NextAutomaticUpdateCheck;
     private HttpListener m_LocalServer;
     private Process m_TunnelProcess;
     private int m_TunnelUrlFound;
@@ -119,6 +151,9 @@ public class Menu : EditorWindow
         SceneView.duringSceneGui += DrawSceneChatOverlay;
         EditorApplication.focusChanged -= HandleUnityFocusChanged;
         EditorApplication.focusChanged += HandleUnityFocusChanged;
+        EditorApplication.update -= AutomaticUpdateTick;
+        EditorApplication.update += AutomaticUpdateTick;
+        m_NextAutomaticUpdateCheck = EditorApplication.timeSinceStartup + 1d;
     }
 
     [MenuItem("Collaboration/Open Window")]
@@ -193,23 +228,33 @@ public class Menu : EditorWindow
         m_PlayerList = root.Q<ScrollView>("player-list");
         m_ChatMessageList = root.Q<ScrollView>("chat-message-list");
         m_ChatMessageInput = root.Q<TextField>("chat-message-input");
-        m_ServerContextMenu = root.Q<VisualElement>("server-context-menu");
+        m_ServerContextMenu = root.Q<VisualElement>("app-context-menu");
         m_PlayerContextMenu = root.Q<VisualElement>("player-context-menu");
+        m_UpdateOverlay = root.Q<VisualElement>("update-overlay");
+        m_UpdateSpinner = root.Q<VisualElement>("update-spinner");
+        m_UpdateLoadingStatus = root.Q<Label>("update-loading-status");
+        m_UpdateStatusLabel = root.Q<Label>("update-status-label");
+        m_GithubPatField = root.Q<TextField>("github-pat-field");
         m_KickPlayerButton = root.Q<Button>("kick-player-button");
         m_GoToPlayerButton = root.Q<Button>("goto-player-button");
         m_WizardNextButton = root.Q<Button>("wizard-next-button");
+        m_CloseServerButton = root.Q<Button>("close-server-button");
 
         root.Q<Button>("create-server-button").clicked += OpenCreateServerFlow;
         root.Q<Button>("wizard-cancel-button").clicked += CloseCreateServerFlow;
         root.Q<Button>("creating-server-cancel-button").clicked += CancelServerCreation;
         root.Q<Button>("close-server-button").clicked += CloseRunningServer;
-        root.Q<Button>("server-menu-button").clicked += ToggleServerContextMenu;
-        root.Q<Button>("server-settings-button").clicked += ShowSettings;
-        root.Q<Button>("settings-back-button").clicked += () => ShowServerTab(true);
+        root.Q<Button>("app-menu-button").clicked += ToggleServerContextMenu;
+        root.Q<Button>("app-settings-button").clicked += ShowSettings;
+        root.Q<Button>("refresh-installation-button").clicked += () => CheckForUpdates(true);
+        root.Q<Button>("settings-back-button").clicked += HideSettings;
         root.Q<Button>("theme-light-button").clicked += () => ApplyTheme("light");
         root.Q<Button>("theme-dark-button").clicked += () => ApplyTheme("dark");
         root.Q<Button>("theme-extra-dark-button").clicked += () => ApplyTheme("extra-dark");
-        root.Q<Button>("theme-midnight-button").clicked += () => ApplyTheme("midnight");
+        m_GithubPatField.isPasswordField = true;
+        m_GithubPatField.SetValueWithoutNotify(EditorPrefs.GetString(GithubPatPreferenceKey, string.Empty));
+        m_GithubPatField.RegisterValueChangedCallback(evt =>
+            EditorPrefs.SetString(GithubPatPreferenceKey, evt.newValue.Trim()));
         m_KickPlayerButton.clicked += KickContextPlayer;
         m_GoToPlayerButton.clicked += GoToContextPlayer;
         m_MainTabButton.clicked += () => ShowServerTab(true);
@@ -244,7 +289,7 @@ public class Menu : EditorWindow
     private void ApplyTheme(string theme, bool save = true)
     {
         VisualElement root = rootVisualElement;
-        foreach (string value in new[] { "light", "dark", "extra-dark", "midnight" })
+        foreach (string value in new[] { "light", "dark", "extra-dark" })
         {
             root.EnableInClassList("theme-" + value, value == theme);
             Button choice = root.Q<Button>("theme-" + value + "-button");
@@ -256,11 +301,179 @@ public class Menu : EditorWindow
     private void ShowSettings()
     {
         HideCustomMenus();
-        m_MainTabContent.AddToClassList("is-hidden");
-        m_ChatTabContent.AddToClassList("is-hidden");
         m_SettingsPage.RemoveFromClassList("is-hidden");
-        m_MainTabButton.RemoveFromClassList("is-selected");
-        m_ChatTabButton.RemoveFromClassList("is-selected");
+    }
+
+    private void HideSettings()
+    {
+        m_SettingsPage.AddToClassList("is-hidden");
+    }
+
+    private void AutomaticUpdateTick()
+    {
+        if (EditorApplication.timeSinceStartup < m_NextAutomaticUpdateCheck)
+            return;
+
+        m_NextAutomaticUpdateCheck = EditorApplication.timeSinceStartup + 60d;
+        CheckForUpdates(false);
+    }
+
+    private async void CheckForUpdates(bool manual)
+    {
+        if (m_UpdateCheckRunning)
+            return;
+
+        m_UpdateCheckRunning = true;
+        SetUpdateStatus(manual ? "Checking GitHub and verifying the installation..." : "Checking for updates...");
+        try
+        {
+            string latestCommit;
+            using (WebClient web = CreateGithubClient())
+            {
+                string json = await web.DownloadStringTaskAsync(new Uri(
+                    LatestCommitUrl + "?menu=" + DateTime.UtcNow.Ticks));
+                Match match = Regex.Match(json, "\\\"sha\\\"\\s*:\\s*\\\"([0-9a-f]{40})\\\"",
+                    RegexOptions.IgnoreCase);
+                if (!match.Success)
+                    throw new InvalidDataException("GitHub did not return a valid commit.");
+                latestCommit = match.Groups[1].Value;
+            }
+
+            string installedCommit = EditorPrefs.GetString(InstalledCommitPreferenceKey, string.Empty);
+            if (!manual && string.IsNullOrEmpty(installedCommit))
+            {
+                EditorPrefs.SetString(InstalledCommitPreferenceKey, latestCommit);
+                SetUpdateStatus("Updates are checked automatically every minute.");
+                return;
+            }
+            if (!manual && string.Equals(installedCommit, latestCommit, StringComparison.OrdinalIgnoreCase))
+            {
+                SetUpdateStatus("Up to date. Checked " + DateTime.Now.ToString("t") + ".");
+                return;
+            }
+
+            ShowUpdateOverlay(string.IsNullOrEmpty(installedCommit)
+                ? "Verifying the current installation..."
+                : "A new version was found. Preparing the update...");
+            await Task.Delay(240);
+            await DownloadAndInstallUpdate(latestCommit);
+        }
+        catch (Exception exception)
+        {
+            UnityEngine.Debug.LogWarning("Collaboration update check failed: " + exception.Message);
+            SetUpdateStatus("Update check failed: " + exception.Message);
+            HideUpdateOverlay();
+        }
+        finally
+        {
+            m_UpdateCheckRunning = false;
+        }
+    }
+
+    private async Task DownloadAndInstallUpdate(string commit)
+    {
+        var downloads = new Dictionary<string, byte[]>();
+        SetUpdateOverlayStatus("Downloading the latest version...");
+        using (WebClient web = CreateGithubClient())
+        {
+            foreach (string fileName in UpdateFiles)
+            {
+                downloads[fileName] = await web.DownloadDataTaskAsync(
+                    new Uri(string.Format(DownloadUrl, commit, fileName)));
+            }
+        }
+
+        string menuSource = Encoding.UTF8.GetString(downloads["Editor/Menu/Menu.cs"]);
+        if (!menuSource.Contains("public class Menu : EditorWindow"))
+            throw new InvalidDataException("The downloaded update is not a valid Collaboration menu.");
+
+        SetUpdateOverlayStatus("Installing update...");
+        string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+        string installRoot = Path.GetFullPath(Path.Combine(
+            projectRoot, "Assets", "@NovaDevvvv", "Collaboration Tool"));
+        string requiredPrefix = projectRoot + Path.DirectorySeparatorChar;
+        if (!installRoot.StartsWith(requiredPrefix, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("The update directory resolved outside the Unity project.");
+
+        foreach (KeyValuePair<string, byte[]> download in downloads)
+        {
+            string destination = Path.GetFullPath(Path.Combine(installRoot, download.Key));
+            if (!destination.StartsWith(installRoot + Path.DirectorySeparatorChar,
+                    StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("An update file resolved outside the install directory.");
+            Directory.CreateDirectory(Path.GetDirectoryName(destination));
+            string temporaryPath = destination + ".download";
+            File.WriteAllBytes(temporaryPath, download.Value);
+            File.Copy(temporaryPath, destination, true);
+            File.Delete(temporaryPath);
+        }
+
+        EditorPrefs.SetString(InstalledCommitPreferenceKey, commit);
+        SetUpdateOverlayStatus("Update installed. Reloading scripts...");
+        AssetDatabase.Refresh(ImportAssetOptions.ForceUpdate);
+    }
+
+    private static WebClient CreateGithubClient()
+    {
+        WebClient web = new WebClient();
+        web.Headers[HttpRequestHeader.UserAgent] = "Unity-Collaboration-Menu";
+        web.Headers[HttpRequestHeader.CacheControl] = "no-cache";
+        web.Headers[HttpRequestHeader.Accept] = "application/vnd.github+json";
+        string token = EditorPrefs.GetString(GithubPatPreferenceKey, string.Empty).Trim();
+        if (!string.IsNullOrEmpty(token))
+            web.Headers[HttpRequestHeader.Authorization] = "Bearer " + token;
+        return web;
+    }
+
+    private void ShowUpdateOverlay(string status)
+    {
+        if (m_UpdateOverlay == null)
+            return;
+        SetUpdateOverlayStatus(status);
+        m_UpdateOverlay.RemoveFromClassList("is-hidden");
+        m_UpdateOverlay.schedule.Execute(() => m_UpdateOverlay.RemoveFromClassList("is-transparent"))
+            .StartingIn(10);
+        StartUpdateSpinner();
+    }
+
+    private void HideUpdateOverlay()
+    {
+        if (m_UpdateOverlay == null || m_UpdateOverlay.ClassListContains("is-hidden"))
+            return;
+        StopUpdateSpinner();
+        m_UpdateOverlay.AddToClassList("is-transparent");
+        m_UpdateOverlay.schedule.Execute(() => m_UpdateOverlay.AddToClassList("is-hidden")).StartingIn(220);
+    }
+
+    private void SetUpdateOverlayStatus(string status)
+    {
+        if (m_UpdateLoadingStatus != null)
+            m_UpdateLoadingStatus.text = status;
+    }
+
+    private void SetUpdateStatus(string status)
+    {
+        if (m_UpdateStatusLabel != null)
+            m_UpdateStatusLabel.text = status;
+    }
+
+    private void StartUpdateSpinner()
+    {
+        m_UpdateSpinnerAnimation?.Pause();
+        m_UpdateSpinnerDegrees = 0f;
+        if (m_UpdateSpinner == null)
+            return;
+        m_UpdateSpinnerAnimation = m_UpdateSpinner.schedule.Execute(() =>
+        {
+            m_UpdateSpinnerDegrees = (m_UpdateSpinnerDegrees + 12f) % 360f;
+            m_UpdateSpinner.style.rotate = new Rotate(new Angle(m_UpdateSpinnerDegrees, AngleUnit.Degree));
+        }).Every(16);
+    }
+
+    private void StopUpdateSpinner()
+    {
+        m_UpdateSpinnerAnimation?.Pause();
+        m_UpdateSpinnerAnimation = null;
     }
 
     private void OpenCreateServerFlow()
@@ -358,10 +571,10 @@ public class Menu : EditorWindow
         m_LoadingWheel.style.rotate = new Rotate(new Angle(0f, AngleUnit.Degree));
         m_LoadingWheelAnimation = m_LoadingWheel.schedule.Execute(() =>
         {
-            m_LoadingWheelDegrees += 24f;
+            m_LoadingWheelDegrees = (m_LoadingWheelDegrees + 12f) % 360f;
             m_LoadingWheel.style.rotate = new Rotate(
                 new Angle(m_LoadingWheelDegrees, AngleUnit.Degree));
-        }).Every(45);
+        }).Every(16);
     }
 
     private void StopLoadingWheel()
@@ -378,6 +591,7 @@ public class Menu : EditorWindow
         StopLoadingWheel();
         StopServer();
         m_IsHost = false;
+        m_CloseServerButton?.AddToClassList("is-hidden");
         m_PlayerRefresh?.Pause();
         m_PlayerRefresh = null;
         CloseCreateServerFlow();
@@ -392,6 +606,7 @@ public class Menu : EditorWindow
         StopLoadingWheel();
         StopServer();
         m_IsHost = false;
+        m_CloseServerButton?.AddToClassList("is-hidden");
         m_PlayerRefresh?.Pause();
         m_PlayerRefresh = null;
         CloseCreateServerFlow();
@@ -868,6 +1083,7 @@ public class Menu : EditorWindow
         GUI.Label(bubbleRect, m_SceneChatOverlayMessage, bubbleStyle);
         if (GUI.Button(clickRect, GUIContent.none, GUIStyle.none))
         {
+            PlayButtonClickSound();
             OpenChatAtSceneMessage();
         }
         Handles.EndGUI();
@@ -1123,6 +1339,7 @@ public class Menu : EditorWindow
                 PopulatePlayerList();
                 ShowServerTab(true);
                 m_CreateServerModal.AddToClassList("server-dashboard");
+                m_CloseServerButton?.RemoveFromClassList("is-hidden");
                 m_ServerReadyState.RemoveFromClassList("is-hidden");
                 m_ServerReadyState.schedule.Execute(() =>
                 {
@@ -1194,6 +1411,7 @@ public class Menu : EditorWindow
         m_MainActions.AddToClassList("is-hidden");
         m_CreateServerModal.RemoveFromClassList("is-hidden");
         m_CreateServerModal.AddToClassList("server-dashboard");
+        m_CloseServerButton?.AddToClassList("is-hidden");
         m_NameStep.AddToClassList("is-hidden"); m_WizardFooter.AddToClassList("is-hidden"); m_CreatingState.AddToClassList("is-hidden");
         m_ServerReadyState.RemoveFromClassList("is-hidden"); m_ServerReadyState.RemoveFromClassList("is-transparent");
         m_ServerCodeField.value = m_ServerCode; PopulatePlayerList(); ShowServerTab(true);
@@ -1334,6 +1552,7 @@ public class Menu : EditorWindow
         m_StartTunnelScheduled?.Pause();
         m_CopyIconReset?.Pause();
         m_TabTransition?.Pause();
+        m_UpdateSpinnerAnimation?.Pause();
         CancelMenuRevealSchedules();
         m_HourglassRotation = null;
         m_ConnectCompletion = null;
@@ -1343,11 +1562,13 @@ public class Menu : EditorWindow
         m_StartTunnelScheduled = null;
         m_CopyIconReset = null;
         m_TabTransition = null;
+        m_UpdateSpinnerAnimation = null;
         m_PlayerRefresh = null;
         m_IsConnecting = false;
 
         SceneView.duringSceneGui -= DrawSceneChatOverlay;
         EditorApplication.update -= RepaintSceneChatOverlay;
+        EditorApplication.update -= AutomaticUpdateTick;
         EditorApplication.focusChanged -= HandleUnityFocusChanged;
 
         if (m_OwnSceneBubbleTexture != null)

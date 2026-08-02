@@ -575,7 +575,6 @@
 .theme-light-preview { color: rgb(25,25,27); background-color: rgb(238,238,242); }
 .theme-dark-preview { background-color: rgb(48,48,53); }
 .theme-extra-dark-preview { background-color: rgb(20,20,22); }
-.theme-midnight-preview { background-color: rgb(13,22,43); }
 
 .theme-light .unity-template-container { background-color: rgb(225,225,230); }
 .theme-light .content-overlay { background-color: rgb(225,225,230); }
@@ -594,8 +593,6 @@
 .theme-light .player-row { background-color: rgb(235,235,239); }
 .theme-dark .unity-template-container { background-color: rgb(40,40,44); }
 .theme-dark .content-overlay { background-color: rgb(40,40,44); }
-.theme-midnight .unity-template-container { background-color: rgb(7,13,27); }
-.theme-midnight .content-overlay { background-color: rgb(7,13,27); }
 
 .chat-message-input {
     flex-grow: 1;
@@ -823,6 +820,307 @@
 
 .danger-menu-item:hover {
     background-color: rgb(138, 42, 51);
+}
+
+.theme-light .rounded-button,
+.theme-light .rounded-input,
+.theme-light .connect-icon-button,
+.theme-light .name-form-background,
+.theme-light .wizard-input,
+.theme-light .wizard-button,
+.theme-light .server-tabs,
+.theme-light .server-section-box,
+.theme-light .server-code-bubble,
+.theme-light .copy-code-button,
+.theme-light .code-icon-button,
+.theme-light .player-row,
+.theme-light .chat-message-list,
+.theme-light .chat-message-input,
+.theme-light .chat-send-button,
+.theme-light .settings-back-button {
+    background-color: rgb(248, 248, 250);
+}
+
+.theme-light .rounded-button,
+.theme-light .rounded-input,
+.theme-light .rounded-input .unity-base-text-field__input,
+.theme-light .connect-icon,
+.theme-light .wizard-question,
+.theme-light .wizard-description,
+.theme-light .wizard-input,
+.theme-light .wizard-input .unity-base-text-field__input,
+.theme-light .wizard-button,
+.theme-light .server-tab-button,
+.theme-light .player-list-title,
+.theme-light .player-name,
+.theme-light .chat-message-input,
+.theme-light .settings-back-button {
+    color: rgb(28, 28, 31);
+}
+
+.theme-light .rounded-button:hover,
+.theme-light .connect-icon-button:hover,
+.theme-light .wizard-button:hover,
+.theme-light .server-tab-button:hover,
+.theme-light .copy-code-button:hover,
+.theme-light .code-icon-button:hover,
+.theme-light .settings-back-button:hover {
+    background-color: rgb(231, 231, 236);
+}
+
+.theme-dark .rounded-button,
+.theme-dark .rounded-input,
+.theme-dark .connect-icon-button,
+.theme-dark .name-form-background,
+.theme-dark .wizard-input,
+.theme-dark .wizard-button,
+.theme-dark .server-tabs,
+.theme-dark .server-section-box,
+.theme-dark .server-code-bubble,
+.theme-dark .copy-code-button,
+.theme-dark .code-icon-button,
+.theme-dark .player-row,
+.theme-dark .chat-message-list,
+.theme-dark .chat-message-input,
+.theme-dark .settings-back-button {
+    background-color: rgb(52, 52, 58);
+}
+
+.theme-dark .rounded-button:hover,
+.theme-dark .connect-icon-button:hover,
+.theme-dark .wizard-button:hover,
+.theme-dark .server-tab-button:hover,
+.theme-dark .copy-code-button:hover,
+.theme-dark .code-icon-button:hover,
+.theme-dark .settings-back-button:hover {
+    background-color: rgb(65, 65, 72);
+}
+
+/* Global menu, settings, responsive layout, and updater overlay. */
+.main-actions {
+    width: 90%;
+    max-width: 430px;
+}
+
+.connection-row {
+    width: 100%;
+}
+
+.rounded-input {
+    width: auto;
+    min-width: 0;
+    flex-grow: 1;
+    flex-shrink: 1;
+}
+
+.connect-icon-button {
+    flex-shrink: 0;
+}
+
+.server-tabs {
+    width: auto;
+    align-self: stretch;
+    margin-right: 48px;
+}
+
+.app-menu-button {
+    position: absolute;
+    right: 10px;
+    top: 10px;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    align-items: center;
+    justify-content: center;
+    border-width: 0;
+    border-radius: 18px;
+    background-image: none;
+    background-color: rgb(24, 24, 27);
+    transition-property: scale, background-color;
+    transition-duration: 0.08s;
+}
+
+.app-menu-button:hover {
+    background-color: rgb(40, 40, 44);
+}
+
+.app-menu-button:active {
+    scale: 0.92 0.92;
+    background-color: rgb(16, 16, 18);
+}
+
+.app-context-menu {
+    right: 10px;
+    top: 52px;
+    min-width: 190px;
+    transform-origin: 100% 0;
+}
+
+.global-page {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    padding: 58px 14px 14px 14px;
+    align-items: center;
+    background-color: rgb(20, 20, 22);
+}
+
+.settings-card {
+    width: 100%;
+    max-width: 520px;
+    padding: 18px;
+    border-radius: 18px;
+    background-color: rgb(24, 24, 27);
+}
+
+.theme-grid {
+    flex-wrap: nowrap;
+}
+
+.theme-choice {
+    width: auto;
+    min-width: 0;
+    flex-grow: 1;
+    margin-right: 8px;
+    transition-property: scale, border-color, background-color;
+    transition-duration: 0.1s;
+}
+
+.theme-choice-last {
+    margin-right: 0;
+}
+
+.theme-choice:hover {
+    scale: 1.02 1.02;
+}
+
+.theme-choice:active,
+.settings-back-button:active {
+    scale: 0.96 0.96;
+}
+
+.settings-token-title {
+    margin-top: 14px;
+}
+
+.settings-token-field {
+    height: 38px;
+    padding-left: 12px;
+    padding-right: 12px;
+    border-width: 1px;
+    border-color: rgb(55, 55, 61);
+    border-radius: 10px;
+    color: white;
+    background-color: rgb(16, 16, 18);
+}
+
+.settings-token-field .unity-base-text-field__input {
+    padding: 0;
+    border-width: 0;
+    background-color: rgba(0, 0, 0, 0);
+}
+
+.update-status-label {
+    margin-top: 14px;
+    color: rgba(255, 255, 255, 0.58);
+    white-space: normal;
+}
+
+.update-overlay {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    align-items: center;
+    justify-content: center;
+    opacity: 1;
+    background-color: rgb(20, 20, 22);
+    transition-property: opacity;
+    transition-duration: 0.22s;
+    transition-timing-function: ease-in-out;
+}
+
+.update-overlay.is-transparent {
+    opacity: 0;
+}
+
+.loading-wheel {
+    border-top-width: 4px;
+    border-top-color: rgba(255, 255, 255, 0.08);
+    border-right-color: rgb(90, 147, 255);
+    border-bottom-color: rgba(90, 147, 255, 0.42);
+    border-left-color: rgba(255, 255, 255, 0.14);
+}
+
+.update-spinner {
+    width: 46px;
+    height: 46px;
+    border-radius: 23px;
+}
+
+.update-loading-title {
+    margin-top: 18px;
+    color: white;
+    font-size: 18px;
+    -unity-font-style: bold;
+}
+
+.update-loading-status {
+    max-width: 380px;
+    margin-top: 7px;
+    color: rgba(255, 255, 255, 0.62);
+    -unity-text-align: middle-center;
+    white-space: normal;
+}
+
+.theme-light .global-page,
+.theme-light .update-overlay {
+    background-color: rgb(225, 225, 230);
+}
+
+.theme-light .settings-card,
+.theme-light .app-menu-button,
+.theme-light .app-context-menu,
+.theme-light .custom-menu-item,
+.theme-light .settings-token-field {
+    background-color: rgb(248, 248, 250);
+}
+
+.theme-light .settings-title,
+.theme-light .settings-section-title,
+.theme-light .custom-menu-label,
+.theme-light .server-menu-icon,
+.theme-light .custom-menu-icon,
+.theme-light .update-loading-title,
+.theme-light .settings-token-field {
+    color: rgb(28, 28, 31);
+}
+
+.theme-light .settings-description,
+.theme-light .update-status-label,
+.theme-light .update-loading-status {
+    color: rgba(28, 28, 31, 0.62);
+}
+
+.theme-light .app-menu-button:hover,
+.theme-light .custom-menu-item:hover {
+    background-color: rgb(231, 231, 236);
+}
+
+.theme-dark .global-page,
+.theme-dark .update-overlay {
+    background-color: rgb(40, 40, 44);
+}
+
+.theme-dark .settings-card,
+.theme-dark .app-menu-button,
+.theme-dark .app-context-menu,
+.theme-dark .custom-menu-item,
+.theme-dark .settings-token-field {
+    background-color: rgb(52, 52, 58);
 }
 
 .server-code-bubble,

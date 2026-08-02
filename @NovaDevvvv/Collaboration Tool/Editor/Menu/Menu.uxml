@@ -72,36 +72,6 @@
 					</engine:VisualElement>
 				</engine:VisualElement>
 
-				<engine:VisualElement name="settings-page" class="server-tab-content settings-page is-hidden">
-					<engine:VisualElement class="settings-header">
-						<engine:Label text="Settings" class="settings-title" />
-						<engine:Button name="settings-back-button" text="Back" class="settings-back-button" />
-					</engine:VisualElement>
-					<engine:Label text="Theme" class="settings-section-title" />
-					<engine:Label text="Choose how the Collaboration window looks." class="settings-description" />
-					<engine:VisualElement class="theme-grid">
-						<engine:Button name="theme-light-button" text="Light" class="theme-choice theme-light-preview" />
-						<engine:Button name="theme-dark-button" text="Dark" class="theme-choice theme-dark-preview" />
-						<engine:Button name="theme-extra-dark-button" text="Extra Dark" class="theme-choice theme-extra-dark-preview is-theme-selected" />
-						<engine:Button name="theme-midnight-button" text="Midnight" class="theme-choice theme-midnight-preview" />
-					</engine:VisualElement>
-				</engine:VisualElement>
-
-				<engine:Button name="server-menu-button" tooltip="Server menu" class="server-menu-button">
-					<engine:Label text="&#xf0c9;" class="server-menu-icon" picking-mode="Ignore" />
-				</engine:Button>
-
-				<engine:VisualElement name="server-context-menu" class="custom-context-menu server-context-menu is-menu-hidden">
-					<engine:Button name="server-settings-button" class="custom-menu-item">
-						<engine:Label text="&#xf013;" class="custom-menu-icon" picking-mode="Ignore" />
-						<engine:Label text="Settings" class="custom-menu-label" picking-mode="Ignore" />
-					</engine:Button>
-					<engine:Button name="close-server-button" class="custom-menu-item danger-menu-item last-menu-item">
-						<engine:Label text="&#xf011;" class="custom-menu-icon" picking-mode="Ignore" />
-						<engine:Label text="Close Server" class="custom-menu-label" picking-mode="Ignore" />
-					</engine:Button>
-				</engine:VisualElement>
-
 				<engine:VisualElement name="player-context-menu" class="custom-context-menu player-context-menu is-menu-hidden">
 					<engine:Button name="goto-player-button" class="custom-menu-item">
 						<engine:Label text="&#xf3c5;" class="custom-menu-icon" picking-mode="Ignore" />
@@ -113,6 +83,50 @@
 					</engine:Button>
 				</engine:VisualElement>
 			</engine:VisualElement>
+		</engine:VisualElement>
+
+		<engine:VisualElement name="settings-page" class="settings-page global-page is-hidden">
+			<engine:VisualElement class="settings-card">
+				<engine:VisualElement class="settings-header">
+					<engine:Label text="Settings" class="settings-title" />
+					<engine:Button name="settings-back-button" text="Back" class="settings-back-button" />
+				</engine:VisualElement>
+				<engine:Label text="Style" class="settings-section-title" />
+				<engine:Label text="Choose how the Collaboration window looks." class="settings-description" />
+				<engine:VisualElement class="theme-grid">
+					<engine:Button name="theme-light-button" text="Light" class="theme-choice theme-light-preview" />
+					<engine:Button name="theme-dark-button" text="Dark" class="theme-choice theme-dark-preview" />
+					<engine:Button name="theme-extra-dark-button" text="Extra Dark" class="theme-choice theme-choice-last theme-extra-dark-preview is-theme-selected" />
+				</engine:VisualElement>
+				<engine:Label text="GitHub personal access token" class="settings-section-title settings-token-title" />
+				<engine:Label text="Optional. Stored locally in Unity EditorPrefs and used only for GitHub update requests." class="settings-description" />
+				<engine:TextField name="github-pat-field" placeholder-text="github_pat_..." class="settings-token-field" />
+				<engine:Label name="update-status-label" text="Updates are checked automatically every minute." class="update-status-label" />
+			</engine:VisualElement>
+		</engine:VisualElement>
+
+		<engine:Button name="app-menu-button" tooltip="Collaboration menu" class="app-menu-button">
+			<engine:Label text="&#xf0c9;" class="server-menu-icon" picking-mode="Ignore" />
+		</engine:Button>
+		<engine:VisualElement name="app-context-menu" class="custom-context-menu app-context-menu is-menu-hidden">
+			<engine:Button name="app-settings-button" class="custom-menu-item">
+				<engine:Label text="&#xf013;" class="custom-menu-icon" picking-mode="Ignore" />
+				<engine:Label text="Settings" class="custom-menu-label" picking-mode="Ignore" />
+			</engine:Button>
+			<engine:Button name="refresh-installation-button" class="custom-menu-item">
+				<engine:Label text="&#xf021;" class="custom-menu-icon" picking-mode="Ignore" />
+				<engine:Label text="Refresh installation" class="custom-menu-label" picking-mode="Ignore" />
+			</engine:Button>
+			<engine:Button name="close-server-button" class="custom-menu-item danger-menu-item last-menu-item is-hidden">
+				<engine:Label text="&#xf011;" class="custom-menu-icon" picking-mode="Ignore" />
+				<engine:Label text="Close Server" class="custom-menu-label" picking-mode="Ignore" />
+			</engine:Button>
+		</engine:VisualElement>
+
+		<engine:VisualElement name="update-overlay" class="update-overlay is-hidden is-transparent">
+			<engine:VisualElement name="update-spinner" class="loading-wheel update-spinner" picking-mode="Ignore" />
+			<engine:Label name="update-loading-title" text="Updating Collaboration" class="update-loading-title" />
+			<engine:Label name="update-loading-status" text="Downloading the latest version..." class="update-loading-status" />
 		</engine:VisualElement>
 	</engine:VisualElement>
 
