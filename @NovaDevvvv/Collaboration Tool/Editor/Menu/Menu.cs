@@ -153,7 +153,7 @@ public class Menu : EditorWindow
         EditorApplication.focusChanged += HandleUnityFocusChanged;
         EditorApplication.update -= AutomaticUpdateTick;
         EditorApplication.update += AutomaticUpdateTick;
-        m_NextAutomaticUpdateCheck = EditorApplication.timeSinceStartup + 1d;
+        m_NextAutomaticUpdateCheck = EditorApplication.timeSinceStartup + 10d;
     }
 
     [MenuItem("Collaboration/Open Window")]
@@ -307,12 +307,20 @@ public class Menu : EditorWindow
     private void HideSettings()
     {
         m_SettingsPage.AddToClassList("is-hidden");
+        m_NextAutomaticUpdateCheck = EditorApplication.timeSinceStartup + 15d;
     }
 
     private void AutomaticUpdateTick()
     {
         if (EditorApplication.timeSinceStartup < m_NextAutomaticUpdateCheck)
             return;
+
+        if ((m_SettingsPage != null && !m_SettingsPage.ClassListContains("is-hidden")) ||
+            m_IsHost || m_IsConnecting)
+        {
+            m_NextAutomaticUpdateCheck = EditorApplication.timeSinceStartup + 15d;
+            return;
+        }
 
         m_NextAutomaticUpdateCheck = EditorApplication.timeSinceStartup + 60d;
         CheckForUpdates(false);
@@ -352,11 +360,10 @@ public class Menu : EditorWindow
                 return;
             }
 
-            ShowUpdateOverlay(string.IsNullOrEmpty(installedCommit)
-                ? "Verifying the current installation..."
-                : "A new version was found. Preparing the update...");
-            await Task.Delay(240);
-            await DownloadAndInstallUpdate(latestCommit);
+            SetUpdateStatus(manual
+                ? "Verifying and downloading the current installation..."
+                : "A new version was found. Downloading it in the background...");
+            await DownloadAndInstallUpdate(latestCommit, manual);
         }
         catch (Exception exception)
         {
@@ -370,10 +377,11 @@ public class Menu : EditorWindow
         }
     }
 
-    private async Task DownloadAndInstallUpdate(string commit)
+    private async Task DownloadAndInstallUpdate(string commit, bool showWhileDownloading)
     {
         var downloads = new Dictionary<string, byte[]>();
-        SetUpdateOverlayStatus("Downloading the latest version...");
+        if (showWhileDownloading)
+            ShowUpdateOverlay("Downloading the latest version...");
         using (WebClient web = CreateGithubClient())
         {
             foreach (string fileName in UpdateFiles)
@@ -387,6 +395,11 @@ public class Menu : EditorWindow
         if (!menuSource.Contains("public class Menu : EditorWindow"))
             throw new InvalidDataException("The downloaded update is not a valid Collaboration menu.");
 
+        if (!showWhileDownloading)
+        {
+            ShowUpdateOverlay("Installing the downloaded update...");
+            await Task.Delay(240);
+        }
         SetUpdateOverlayStatus("Installing update...");
         string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
         string installRoot = Path.GetFullPath(Path.Combine(
