@@ -822,6 +822,24 @@
     background-color: rgb(138, 42, 51);
 }
 
+/* Keep dark-mode feedback above all shared neutral-surface rules. */
+.theme-dark .unity-button:hover {
+    color: white;
+    background-color: rgb(78, 78, 87);
+    border-color: rgb(104, 104, 116);
+    translate: 0 -1px;
+}
+
+.theme-dark .unity-button:active {
+    background-color: rgb(30, 30, 34);
+    translate: 0 1px;
+    scale: 0.97 0.97;
+}
+
+.theme-dark .danger-menu-item:hover {
+    background-color: rgb(155, 48, 58);
+}
+
 .theme-light .rounded-button,
 .theme-light .rounded-input,
 .theme-light .connect-icon-button,

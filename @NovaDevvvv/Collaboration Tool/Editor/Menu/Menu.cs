@@ -255,7 +255,7 @@ public class Menu : EditorWindow
         root.Q<Button>("create-server-button").clicked += OpenCreateServerFlow;
         root.Q<Button>("wizard-cancel-button").clicked += CloseCreateServerFlow;
         root.Q<Button>("creating-server-cancel-button").clicked += CancelServerCreation;
-        root.Q<Button>("close-server-button").clicked += CloseRunningServer;
+        root.Q<Button>("close-server-button").clicked += RequestCloseRunningServer;
         root.Q<Button>("app-menu-button").clicked += ToggleServerContextMenu;
         root.Q<Button>("app-settings-button").clicked += ShowSettings;
         root.Q<Button>("refresh-installation-button").clicked += () => CheckForUpdates(true);
@@ -639,6 +639,20 @@ public class Menu : EditorWindow
         m_PlayerRefresh?.Pause();
         m_PlayerRefresh = null;
         CloseCreateServerFlow();
+    }
+
+    private void RequestCloseRunningServer()
+    {
+        if (!m_IsHost)
+            return;
+        if (EditorUtility.DisplayDialog(
+                "Close Collaboration Server",
+                "Close the server and disconnect everyone?",
+                "Close Server",
+                "Cancel"))
+        {
+            CloseRunningServer();
+        }
     }
 
     private void CopyServerCode()
