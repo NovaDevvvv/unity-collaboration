@@ -141,12 +141,19 @@ public class Menu : EditorWindow
 
     private sealed class TimeoutWebClient : WebClient
     {
+        private readonly int m_Timeout;
+
+        public TimeoutWebClient(int timeout = 10000)
+        {
+            m_Timeout = timeout;
+        }
+
         protected override WebRequest GetWebRequest(Uri address)
         {
             WebRequest request = base.GetWebRequest(address);
-            request.Timeout = 10000;
+            request.Timeout = m_Timeout;
             if (request is HttpWebRequest httpRequest)
-                httpRequest.ReadWriteTimeout = 10000;
+                httpRequest.ReadWriteTimeout = m_Timeout;
             return request;
         }
     }
@@ -1328,7 +1335,11 @@ public class Menu : EditorWindow
             {
                 HttpListenerContext context = await listener.GetContextAsync();
                 string path = context.Request.Url.AbsolutePath.Trim('/').ToLowerInvariant();
-                if (path == "join" || path == "heartbeat")
+                if (path == "health")
+                {
+                    response = Encoding.UTF8.GetBytes("nova-collaboration-ready");
+                }
+                else if (path == "join" || path == "heartbeat")
                 {
                     UpdateRemotePlayer(context.Request.QueryString);
                     response = Encoding.UTF8.GetBytes(BuildPlayerSnapshot());
@@ -1396,7 +1407,39 @@ public class Menu : EditorWindow
         }
 
         string tunnelUrl = match.Value;
-        EditorApplication.delayCall += () => ShowTunnelLink(tunnelUrl);
+        EditorApplication.delayCall += () => VerifyTunnelAndShowLink(tunnelUrl);
+    }
+
+    private async void VerifyTunnelAndShowLink(string tunnelUrl)
+    {
+        if (m_CreatingStatus != null)
+            m_CreatingStatus.text = "Verifying public server...";
+
+        for (int attempt = 0; attempt < 8; attempt++)
+        {
+            try
+            {
+                using (WebClient client = new TimeoutWebClient(3000))
+                {
+                    string health = await client.DownloadStringTaskAsync(
+                        tunnelUrl.TrimEnd('/') + "/health?check=" + DateTime.UtcNow.Ticks);
+                    if (health.Trim() == "nova-collaboration-ready")
+                    {
+                        ShowTunnelLink(tunnelUrl);
+                        return;
+                    }
+                }
+            }
+            catch (WebException)
+            {
+                // Quick tunnels can advertise their hostname before routing is ready.
+            }
+
+            await Task.Delay(750);
+        }
+
+        ShowTunnelError("The public tunnel was created but never reached this Collaboration server. Try creating it again.");
+        StopServer();
     }
 
     private void HandleTunnelExited(object sender, EventArgs args)
@@ -1491,7 +1534,12 @@ public class Menu : EditorWindow
         }
         catch (Exception exception)
         {
-            string failure = "Could not connect: " + exception.Message;
+            string detail = exception is WebException webException &&
+                webException.Response is HttpWebResponse response &&
+                response.StatusCode == HttpStatusCode.NotFound
+                ? "That server code is expired or does not point to a Collaboration server. Ask the host for a new code."
+                : exception.Message;
+            string failure = "Could not connect: " + detail;
             UnityEngine.Debug.LogWarning("Could not connect to the Collaboration server: " + exception.Message);
             EndConnecting();
             m_ConnectButton.schedule.Execute(() => m_ConnectButton.tooltip = failure).StartingIn(500);

@@ -49,7 +49,7 @@
 					<engine:VisualElement class="code-section server-section-box">
 						<engine:Label text="Code" class="player-list-title" />
 						<engine:VisualElement class="server-code-bubble">
-							<engine:TextField name="server-code-field" class="server-code-field" />
+							<engine:TextField name="server-code-field" class="server-code-field" picking-mode="Ignore" />
 							<engine:Button name="view-code-button" tooltip="Show code" class="code-icon-button">
 								<engine:Label name="view-code-icon" text="&#xf06e;" class="code-action-icon" picking-mode="Ignore" />
 							</engine:Button>
