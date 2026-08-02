@@ -9,8 +9,9 @@
 	<engine:VisualElement class="content-overlay">
 		<engine:VisualElement name="main-actions" class="main-actions">
 			<engine:Button name="create-server-button" text="Create Server" class="rounded-button" />
+			<engine:TextField name="join-name-input" placeholder-text="Your name" class="rounded-input join-name-input" />
 			<engine:VisualElement class="connection-row">
-				<engine:TextField name="server-code-input" placeholder-text="Server Code" class="rounded-input" />
+				<engine:TextField name="server-code-input" placeholder-text="4-character code" max-length="4" class="rounded-input server-code-input" />
 				<engine:Button name="collaborate-button" tooltip="Connect" class="connect-icon-button">
 					<engine:Label name="connect-icon" text="&#xf1e6;" class="connect-icon" picking-mode="Ignore" />
 				</engine:Button>

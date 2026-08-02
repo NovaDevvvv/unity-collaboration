@@ -2,7 +2,7 @@
 
 # Unity Collaboration
 
-Real-time collaboration tools built directly into the Unity Editor. Host a session, share the generated link, and work with other developers without manually exchanging scene and asset files.
+Real-time collaboration tools built directly into the Unity Editor. Host a session, share its four-character code, and work with other developers without manually exchanging scene and asset files.
 
 > [!WARNING]
 > This project is experimental. Collaboration writes remote files into the client's `Assets` directory. Use version control and commit or back up important work before starting a session.
@@ -26,7 +26,7 @@ Real-time collaboration tools built directly into the Unity Editor. Host a sessi
 - A supported Unity Editor project on each computer
 - The same Unity version and compatible project/package dependencies on every computer
 - Internet access for installation, update checks, and remote sessions
-- `cloudflared` available on the host's `PATH`, or an environment capable of using the included SSH tunnel fallback
+- HTTPS and WebSocket access to `collaborate.novaa.dev`
 - Version control is strongly recommended
 
 Runtime scripts and editor assemblies are deliberately excluded from session asset snapshots because importing code would trigger a Unity recompilation and disconnect the active session. Install required packages and scripts on every collaborator's base project before connecting.
@@ -54,8 +54,8 @@ The installer requires access to GitHub. A DNS error such as `NameResolutionFail
 
 1. Open **Collaborate > Window**.
 2. Select **Create Server**.
-3. Enter a display name and wait for the secure share link.
-4. Send that link to collaborators.
+3. Enter a display name and wait for the four-character session code.
+4. Send that code to collaborators.
 5. Keep Unity and the Collaboration window running while the session is active.
 
 Closing the server notifies connected clients and leaves the host in its current scene. Only the host is prompted to save host-side scene changes.
@@ -63,8 +63,8 @@ Closing the server notifies connected clients and leaves the host in its current
 ### Client
 
 1. Open the same base project in Unity.
-2. Open **Collaborate > Window** and select **Join Server**.
-3. Enter a display name and the host's share link.
+2. Open **Collaborate > Window**.
+3. Enter a display name and the host's four-character code, then press Connect.
 4. Wait for the initial host asset snapshot to finish importing.
 
 The Players tab is selected when a session starts. The client can open any synchronized scene from the Project window; opening a scene does not force the host or other clients to open it.
@@ -119,11 +119,13 @@ Save the authoritative scene on the host, reconnect the affected client, and all
 
 ### Update check says offline
 
-The tool treats DNS, timeout, and connection failures as an offline update check. Collaboration may still work on a suitable network, but installation and public tunnel creation require network access.
+The tool treats DNS, timeout, and connection failures as an offline update check. Collaboration sessions require DNS, HTTPS, and WebSocket access to `collaborate.novaa.dev`.
 
 ## Development
 
 The tool source lives in [`@NovaDevvvv/Collaboration Tool/Editor`](@NovaDevvvv/Collaboration%20Tool/Editor). The small `.unitypackage` in `Installer` installs a downloader, which retrieves the current source into the consuming Unity project.
+
+The relay Worker lives in [`Worker`](Worker). `POST /v1/create` allocates a four-character uppercase alphanumeric code. `GET /v1/connect` upgrades to a WebSocket backed by a Durable Object dedicated to that session. Deploy it with `wrangler deploy` from the `Worker` directory.
 
 When changing the network message format, update both host and client before testing. Different revisions are not guaranteed to be protocol-compatible.
 

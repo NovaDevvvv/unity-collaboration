@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Net.WebSockets;
 using System.Reflection;
 using System.Security;
 using System.Text;
@@ -26,6 +27,7 @@ public class Menu : EditorWindow
     private const string GithubPatPreferenceKey = "NovaCollaboration.GithubPat";
     private const string InstalledCommitPreferenceKey = "NovaCollaboration.InstalledCommit";
     private const string PendingUpdateCommitKey = "NovaCollaboration.PendingUpdateCommit";
+    private const string CollaborationApiUrl = "https://collaborate.novaa.dev";
     private const string LatestCommitUrl =
         "https://api.github.com/repos/novadevvvv/unity-collaboration/commits/main";
     private const string DownloadUrl =
@@ -128,6 +130,33 @@ public class Menu : EditorWindow
     private string m_LocalPlayerId = Guid.NewGuid().ToString("N");
     private string m_LocalPlayerName;
     private IVisualElementScheduledItem m_PlayerRefresh;
+    private ClientWebSocket m_RelaySocket;
+    private CancellationTokenSource m_RelayCancellation;
+    private readonly SemaphoreSlim m_RelaySendLock = new SemaphoreSlim(1, 1);
+    private string m_RelayHostToken;
+
+    [Serializable]
+    private sealed class CreateSessionRequest { public string name; }
+
+    [Serializable]
+    private sealed class CreateSessionResponse
+    {
+        public string code;
+        public string hostToken;
+        public string error;
+    }
+
+    [Serializable]
+    private sealed class RelayMessage
+    {
+        public string type;
+        public string id;
+        public string name;
+        public string message;
+        public float px;
+        public float py;
+        public float pz;
+    }
 
     [Serializable]
     private sealed class RemotePlayer
@@ -270,6 +299,7 @@ public class Menu : EditorWindow
         m_GithubPatField.SetValueWithoutNotify(EditorPrefs.GetString(GithubPatPreferenceKey, string.Empty));
         m_GithubPatField.RegisterValueChangedCallback(evt =>
             EditorPrefs.SetString(GithubPatPreferenceKey, evt.newValue.Trim()));
+        root.Q<TextField>("join-name-input").SetValueWithoutNotify(Environment.UserName);
         m_KickPlayerButton.clicked += KickContextPlayer;
         m_GoToPlayerButton.clicked += GoToContextPlayer;
         m_MainTabButton.clicked += () => ShowServerTab(true);
@@ -963,6 +993,7 @@ public class Menu : EditorWindow
         }
 
         AddChatMessage(message, true, "You");
+        _ = SendRelayMessageAsync(new RelayMessage { type = "chat", message = message });
         m_ChatMessageInput.SetValueWithoutNotify(string.Empty);
         m_ChatMessageInput.Focus();
     }
@@ -1259,31 +1290,60 @@ public class Menu : EditorWindow
     private void StartTunnel()
     {
         StopServer();
-        Interlocked.Exchange(ref m_TunnelUrlFound, 0);
+        _ = CreateCloudSessionAsync();
+    }
 
+    private async Task CreateCloudSessionAsync()
+    {
         try
         {
-            int port = FindAvailablePort();
-            m_ServerPort = port;
-            m_LocalServer = new HttpListener();
-            m_LocalServer.Prefixes.Add($"http://127.0.0.1:{port}/");
-            m_LocalServer.Start();
-            _ = RunLocalServerAsync(m_LocalServer);
+            m_CreatingStatus.text = "Requesting session...";
+            string responseJson;
+            using (WebClient client = new TimeoutWebClient(15000))
+            {
+                client.Headers[HttpRequestHeader.ContentType] = "application/json";
+                string body = JsonUtility.ToJson(new CreateSessionRequest { name = m_LocalPlayerName });
+                responseJson = await client.UploadStringTaskAsync(
+                    CollaborationApiUrl + "/v1/create", "POST", body);
+            }
 
-            if (File.Exists(CloudflaredPath))
-            {
-                StartTunnelProcess(CloudflaredPath,
-                    $"tunnel --no-autoupdate --url http://127.0.0.1:{port}", false);
-            }
-            else
-            {
-                StartLhrFallback();
-            }
+            CreateSessionResponse response = JsonUtility.FromJson<CreateSessionResponse>(responseJson);
+            if (response == null || !Regex.IsMatch(response.code ?? string.Empty, "^[A-Z0-9]{4}$"))
+                throw new InvalidDataException(response?.error ?? "The session service returned an invalid code.");
+
+            m_CreatingStatus.text = "Opening secure session...";
+            m_RelayHostToken = response.hostToken;
+            await ConnectRelayAsync(response.code, m_LocalPlayerName, m_RelayHostToken);
+            ShowSessionReady(response.code);
         }
         catch (Exception exception)
         {
             ShowTunnelError(exception.Message);
+            StopServer();
         }
+    }
+
+    private void ShowSessionReady(string code)
+    {
+        StopLoadingWheel();
+        m_CreatingState.schedule.Execute(() =>
+        {
+            m_CreatingState.AddToClassList("is-transparent");
+            m_CreatingState.schedule.Execute(() =>
+            {
+                m_CreatingState.AddToClassList("is-hidden");
+                m_ServerCode = code;
+                m_ServerCodeField.value = code;
+                PopulatePlayerList();
+                ShowServerTab(true);
+                m_CreateServerModal.AddToClassList("server-dashboard");
+                m_CloseServerButton?.RemoveFromClassList("is-hidden");
+                m_ServerReadyState.RemoveFromClassList("is-hidden");
+                m_ServerReadyState.schedule.Execute(() =>
+                    m_ServerReadyState.RemoveFromClassList("is-transparent")).StartingIn(20);
+                StartRelayStateUpdates();
+            }).StartingIn(200);
+        }).StartingIn(120);
     }
 
     private void StartTunnelProcess(string executable, string arguments, bool usingLhr)
@@ -1500,17 +1560,16 @@ public class Menu : EditorWindow
             return;
         }
 
-        string enteredCode = rootVisualElement.Q<TextField>("server-code-input").value?.Trim();
+        string enteredCode = rootVisualElement.Q<TextField>("server-code-input").value?.Trim().ToUpperInvariant();
         try
         {
-            int separator = enteredCode == null ? -1 : enteredCode.IndexOf('.');
-            if (separator < 1) throw new InvalidOperationException("Use the complete code copied by the host.");
-            string encoded = enteredCode.Substring(separator + 1).Replace('-', '+').Replace('_', '/');
-            encoded = encoded.PadRight(encoded.Length + (4 - encoded.Length % 4) % 4, '=');
-            m_TunnelUrl = Encoding.UTF8.GetString(Convert.FromBase64String(encoded));
+            if (!Regex.IsMatch(enteredCode ?? string.Empty, "^[A-Z0-9]{4}$"))
+                throw new InvalidOperationException("Enter the four-character code from the host.");
             m_ServerCode = enteredCode;
             m_IsHost = false;
-            m_LocalPlayerName = Environment.UserName;
+            m_LocalPlayerName = rootVisualElement.Q<TextField>("join-name-input").value?.Trim();
+            if (string.IsNullOrEmpty(m_LocalPlayerName))
+                throw new InvalidOperationException("Enter your name before connecting.");
         }
         catch (Exception exception)
         {
@@ -1524,10 +1583,9 @@ public class Menu : EditorWindow
         SwapIcon(HourglassIcon, StartConnectingWait);
         try
         {
-            string snapshot = await SendHeartbeatAsync("join");
+            await ConnectRelayAsync(m_ServerCode, m_LocalPlayerName);
             ShowUpdateOverlay("Server found", "Loading collaboration session...");
             await Task.Delay(350);
-            ApplyRemoteSnapshot(snapshot);
             ShowJoinedLobby();
             HideUpdateOverlay();
             EndConnecting();
@@ -1569,8 +1627,114 @@ public class Menu : EditorWindow
         m_NameStep.AddToClassList("is-hidden"); m_WizardFooter.AddToClassList("is-hidden"); m_CreatingState.AddToClassList("is-hidden");
         m_ServerReadyState.RemoveFromClassList("is-hidden"); m_ServerReadyState.RemoveFromClassList("is-transparent");
         m_ServerCodeField.value = m_ServerCode; PopulatePlayerList(); ShowServerTab(true);
+        StartRelayStateUpdates();
+    }
+
+    private async Task ConnectRelayAsync(string code, string name, string hostToken = null)
+    {
+        StopRelaySocket();
+        m_RelayCancellation = new CancellationTokenSource();
+        m_RelaySocket = new ClientWebSocket();
+        string url = CollaborationApiUrl.Replace("https://", "wss://") +
+            "/v1/connect?code=" + Uri.EscapeDataString(code) +
+            "&name=" + Uri.EscapeDataString(name) +
+            "&id=" + Uri.EscapeDataString(m_LocalPlayerId) +
+            (string.IsNullOrEmpty(hostToken) ? string.Empty :
+                "&hostToken=" + Uri.EscapeDataString(hostToken));
+        await m_RelaySocket.ConnectAsync(new Uri(url), m_RelayCancellation.Token);
+        _ = ReceiveRelayLoopAsync(m_RelaySocket, m_RelayCancellation.Token);
+        await SendCurrentRelayStateAsync();
+    }
+
+    private void StartRelayStateUpdates()
+    {
         m_PlayerRefresh?.Pause();
-        m_PlayerRefresh = m_ServerReadyState.schedule.Execute(async () => { try { ApplyRemoteSnapshot(await SendHeartbeatAsync("heartbeat")); } catch { } }).Every(1500);
+        m_PlayerRefresh = m_ServerReadyState.schedule.Execute(
+            () => _ = SendCurrentRelayStateAsync()).Every(1500);
+    }
+
+    private Task SendCurrentRelayStateAsync()
+    {
+        Vector3 position = SceneView.lastActiveSceneView != null
+            ? SceneView.lastActiveSceneView.pivot : Vector3.zero;
+        return SendRelayMessageAsync(new RelayMessage
+        {
+            type = "state", px = position.x, py = position.y, pz = position.z
+        });
+    }
+
+    private async Task SendRelayMessageAsync(RelayMessage message)
+    {
+        ClientWebSocket socket = m_RelaySocket;
+        if (socket == null || socket.State != WebSocketState.Open) return;
+        byte[] payload = Encoding.UTF8.GetBytes(JsonUtility.ToJson(message));
+        await m_RelaySendLock.WaitAsync();
+        try
+        {
+            if (socket.State == WebSocketState.Open)
+                await socket.SendAsync(new ArraySegment<byte>(payload), WebSocketMessageType.Text, true,
+                    m_RelayCancellation?.Token ?? CancellationToken.None);
+        }
+        finally
+        {
+            m_RelaySendLock.Release();
+        }
+    }
+
+    private async Task ReceiveRelayLoopAsync(ClientWebSocket socket, CancellationToken cancellation)
+    {
+        byte[] buffer = new byte[8192];
+        try
+        {
+            while (socket.State == WebSocketState.Open && !cancellation.IsCancellationRequested)
+            {
+                using (MemoryStream message = new MemoryStream())
+                {
+                    WebSocketReceiveResult result;
+                    do
+                    {
+                        result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), cancellation);
+                        if (result.MessageType == WebSocketMessageType.Close) return;
+                        message.Write(buffer, 0, result.Count);
+                    } while (!result.EndOfMessage);
+                    string jsonMessage = Encoding.UTF8.GetString(message.ToArray());
+                    EditorApplication.delayCall += () => HandleRelayMessage(jsonMessage);
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception exception)
+        {
+            UnityEngine.Debug.LogWarning("Collaboration WebSocket closed: " + exception.Message);
+        }
+    }
+
+    private void HandleRelayMessage(string jsonMessage)
+    {
+        RelayMessage message = JsonUtility.FromJson<RelayMessage>(jsonMessage);
+        if (message == null || string.IsNullOrEmpty(message.type) || message.id == m_LocalPlayerId) return;
+        if (message.type == "leave")
+        {
+            lock (m_PlayerLock) m_RemotePlayers.Remove(message.id);
+            PopulatePlayerList();
+            return;
+        }
+        if (message.type == "chat")
+        {
+            AddChatMessage(message.message ?? string.Empty, false, message.name ?? "Player");
+            return;
+        }
+        if (message.type == "state" || message.type == "presence")
+        {
+            lock (m_PlayerLock)
+                m_RemotePlayers[message.id] = new RemotePlayer
+                {
+                    id = message.id, name = message.name ?? "Player",
+                    cameraPosition = new Vector3(message.px, message.py, message.pz),
+                    cameraRotation = Quaternion.identity, lastSeenTicks = DateTime.UtcNow.Ticks
+                };
+            PopulatePlayerList();
+        }
     }
 
     private void ApplyRemoteSnapshot(string snapshot)
@@ -1672,6 +1836,7 @@ public class Menu : EditorWindow
 
     private void StopServer()
     {
+        StopRelaySocket();
         try
         {
             m_LocalServer?.Close();
@@ -1695,6 +1860,16 @@ public class Menu : EditorWindow
         }
         m_TunnelProcess?.Dispose();
         m_TunnelProcess = null;
+    }
+
+    private void StopRelaySocket()
+    {
+        m_RelayCancellation?.Cancel();
+        m_RelayCancellation?.Dispose();
+        m_RelayCancellation = null;
+        m_RelaySocket?.Dispose();
+        m_RelaySocket = null;
+        m_RelayHostToken = null;
     }
 
     private void OnDisable()

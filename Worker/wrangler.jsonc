@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "nova-collaboration-relay",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-02",
+  "account_id": "5de37970968d257b16e83901406c7d34",
+  "routes": [
+    {
+      "pattern": "collaborate.novaa.dev",
+      "custom_domain": true
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SESSIONS",
+        "class_name": "CollaborationSession"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["CollaborationSession"]
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}
