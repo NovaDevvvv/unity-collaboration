@@ -25,25 +25,18 @@ public class Menu : EditorWindow
     private const string ThemePreferenceKey = "NovaCollaboration.Theme";
     private const string GithubPatPreferenceKey = "NovaCollaboration.GithubPat";
     private const string InstalledCommitPreferenceKey = "NovaCollaboration.InstalledCommit";
+    private const string PendingUpdateCommitKey = "NovaCollaboration.PendingUpdateCommit";
     private const string LatestCommitUrl =
         "https://api.github.com/repos/novadevvvv/unity-collaboration/commits/main";
     private const string DownloadUrl =
         "https://raw.githubusercontent.com/novadevvvv/unity-collaboration/{0}/%40NovaDevvvv/Collaboration%20Tool/{1}";
     private static readonly string[] UpdateFiles =
     {
-        "Editor.meta",
-        "Editor/Menu.meta",
         "Editor/Menu/Menu.cs",
-        "Editor/Menu/Menu.cs.meta",
         "Editor/Menu/Menu.uss",
-        "Editor/Menu/Menu.uss.meta",
         "Editor/Menu/Menu.uxml",
-        "Editor/Menu/Menu.uxml.meta",
-        "Editor/Menu/Fonts.meta",
         "Editor/Menu/Fonts/Font Awesome 6 Free-Solid-900.otf",
-        "Editor/Menu/Fonts/Font Awesome 6 Free-Solid-900.otf.meta",
-        "Editor/Menu/Fonts/Font Awesome LICENSE.txt",
-        "Editor/Menu/Fonts/Font Awesome LICENSE.txt.meta"
+        "Editor/Menu/Fonts/Font Awesome LICENSE.txt"
     };
     private const string CloudflaredPath =
         @"C:\Program Files (x86)\cloudflared\cloudflared.exe";
@@ -95,6 +88,7 @@ public class Menu : EditorWindow
     private VisualElement m_UpdateOverlay;
     private VisualElement m_UpdateSpinner;
     private Label m_UpdateLoadingStatus;
+    private Label m_UpdateLoadingTitle;
     private Label m_UpdateStatusLabel;
     private TextField m_GithubPatField;
     private Button m_KickPlayerButton;
@@ -166,6 +160,7 @@ public class Menu : EditorWindow
         EditorApplication.update -= AutomaticUpdateTick;
         EditorApplication.update += AutomaticUpdateTick;
         m_NextAutomaticUpdateCheck = EditorApplication.timeSinceStartup + 10d;
+        EditorApplication.delayCall += CompletePendingUpdateReload;
     }
 
     [MenuItem("Collaboration/Open Window")]
@@ -245,6 +240,7 @@ public class Menu : EditorWindow
         m_UpdateOverlay = root.Q<VisualElement>("update-overlay");
         m_UpdateSpinner = root.Q<VisualElement>("update-spinner");
         m_UpdateLoadingStatus = root.Q<Label>("update-loading-status");
+        m_UpdateLoadingTitle = root.Q<Label>("update-loading-title");
         m_UpdateStatusLabel = root.Q<Label>("update-status-label");
         m_GithubPatField = root.Q<TextField>("github-pat-field");
         m_KickPlayerButton = root.Q<Button>("kick-player-button");
@@ -296,6 +292,7 @@ public class Menu : EditorWindow
 
         HideCustomMenus();
         ApplyTheme(EditorPrefs.GetString(ThemePreferenceKey, "extra-dark"), false);
+        CompletePendingUpdateReload();
     }
 
     private void ApplyTheme(string theme, bool save = true)
@@ -374,11 +371,12 @@ public class Menu : EditorWindow
 
             if (!manual)
             {
-                SetUpdateStatus("Update available. Use Refresh installation from the menu when ready.");
+                SetUpdateStatus("Update " + ShortCommit(latestCommit) +
+                    " is available. Use Refresh installation from the menu when ready.");
                 return;
             }
 
-            SetUpdateStatus("Verifying and downloading the current installation...");
+            SetUpdateStatus("Downloading version " + ShortCommit(latestCommit) + "...");
             await DownloadAndInstallUpdate(latestCommit, manual);
         }
         catch (Exception exception)
@@ -395,9 +393,10 @@ public class Menu : EditorWindow
 
     private async Task DownloadAndInstallUpdate(string commit, bool showWhileDownloading)
     {
+        string shortCommit = ShortCommit(commit);
         var downloads = new Dictionary<string, byte[]>();
         if (showWhileDownloading)
-            ShowUpdateOverlay("Downloading the latest version...");
+            ShowUpdateOverlay("Installing " + shortCommit, "Downloading version " + shortCommit + "...");
         using (WebClient web = CreateGithubClient())
         {
             foreach (string fileName in UpdateFiles)
@@ -413,10 +412,10 @@ public class Menu : EditorWindow
 
         if (!showWhileDownloading)
         {
-            ShowUpdateOverlay("Installing the downloaded update...");
+            ShowUpdateOverlay("Installing " + shortCommit, "Preparing version " + shortCommit + "...");
             await Task.Delay(240);
         }
-        SetUpdateOverlayStatus("Installing update...");
+        SetUpdateOverlayStatus("Installing version " + shortCommit + "...");
         string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
         string installRoot = Path.GetFullPath(Path.Combine(
             projectRoot, "Assets", "@NovaDevvvv", "Collaboration Tool"));
@@ -438,7 +437,8 @@ public class Menu : EditorWindow
         }
 
         EditorPrefs.SetString(InstalledCommitPreferenceKey, commit);
-        SetUpdateOverlayStatus("Update installed. Reloading scripts...");
+        SessionState.SetString(PendingUpdateCommitKey, commit);
+        SetUpdateOverlayStatus("Version " + shortCommit + " installed. Reloading scripts...");
         AssetDatabase.Refresh(ImportAssetOptions.ForceUpdate);
     }
 
@@ -454,10 +454,12 @@ public class Menu : EditorWindow
         return web;
     }
 
-    private void ShowUpdateOverlay(string status)
+    private void ShowUpdateOverlay(string title, string status)
     {
         if (m_UpdateOverlay == null)
             return;
+        if (m_UpdateLoadingTitle != null)
+            m_UpdateLoadingTitle.text = title;
         SetUpdateOverlayStatus(status);
         m_UpdateOverlay.RemoveFromClassList("is-hidden");
         m_UpdateOverlay.schedule.Execute(() => m_UpdateOverlay.RemoveFromClassList("is-transparent"))
@@ -484,6 +486,32 @@ public class Menu : EditorWindow
     {
         if (m_UpdateStatusLabel != null)
             m_UpdateStatusLabel.text = status;
+    }
+
+    private static string ShortCommit(string commit)
+    {
+        return string.IsNullOrEmpty(commit) ? "unknown" : commit.Substring(0, Math.Min(7, commit.Length));
+    }
+
+    private void CompletePendingUpdateReload()
+    {
+        string commit = SessionState.GetString(PendingUpdateCommitKey, string.Empty);
+        VisualElement overlay = rootVisualElement.Q<VisualElement>("update-overlay");
+        if (overlay == null)
+            return;
+
+        bool staleOverlayVisible = !overlay.ClassListContains("is-hidden");
+        if (string.IsNullOrEmpty(commit) && !staleOverlayVisible)
+            return;
+
+        StopUpdateSpinner();
+        overlay.AddToClassList("is-transparent");
+        overlay.AddToClassList("is-hidden");
+        SetUpdateStatus(string.IsNullOrEmpty(commit)
+            ? "Script reload completed."
+            : "Installed version " + ShortCommit(commit) + ".");
+        SessionState.EraseString(PendingUpdateCommitKey);
+        Repaint();
     }
 
     private void StartUpdateSpinner()
