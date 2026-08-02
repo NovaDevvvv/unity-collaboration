@@ -376,9 +376,10 @@ public class Menu : EditorWindow
                 SetUpdateStatus("Updates are checked automatically every minute.");
                 return;
             }
-            if (!manual && string.Equals(installedCommit, latestCommit, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(installedCommit, latestCommit, StringComparison.OrdinalIgnoreCase))
             {
-                SetUpdateStatus("Up to date. Checked " + DateTime.Now.ToString("t") + ".");
+                SetUpdateStatus("Version " + ShortCommit(latestCommit) +
+                    " is already installed. Checked " + DateTime.Now.ToString("t") + ".");
                 return;
             }
 
