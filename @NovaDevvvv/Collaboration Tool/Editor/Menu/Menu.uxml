@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8"?>
+<engine:UXML
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns:engine="UnityEngine.UIElements"
+    xmlns:editor="UnityEditor.UIElements"
+    xsi:noNamespaceSchemaLocation="../../../../../UIElementsSchema/UIElements.xsd"
+>
+    <Style src="project://database/Assets/@NovaDevvvv/Collaboration%20Tool/Editor/Menu/Menu.uss?fileID=7433441132597879392&amp;guid=0773e20943815684bac845dff1692d7c&amp;type=3#Menu" />
+	<engine:VisualElement class="content-overlay">
+		<engine:VisualElement name="main-actions" class="main-actions">
+			<engine:Button name="create-server-button" text="Create Server" class="rounded-button" />
+			<engine:VisualElement class="connection-row">
+				<engine:TextField name="server-code-input" placeholder-text="Server Code" class="rounded-input" />
+				<engine:Button name="collaborate-button" tooltip="Connect" class="connect-icon-button">
+					<engine:Label name="connect-icon" text="&#xf1e6;" class="connect-icon" picking-mode="Ignore" />
+				</engine:Button>
+			</engine:VisualElement>
+		</engine:VisualElement>
+
+		<engine:VisualElement name="create-server-modal" class="wizard-modal is-hidden is-transparent">
+			<engine:VisualElement name="wizard-step-name" class="wizard-step">
+				<engine:VisualElement class="name-form-background">
+					<engine:Label text="Your name" class="wizard-question" />
+					<engine:Label text="This is how collaborators will see you." class="wizard-description" />
+					<engine:TextField name="display-name-input" placeholder-text="Enter your name" class="wizard-input" />
+				</engine:VisualElement>
+			</engine:VisualElement>
+
+			<engine:VisualElement name="wizard-footer" class="wizard-footer">
+				<engine:Button name="wizard-cancel-button" text="Cancel" class="wizard-button wizard-button-secondary" />
+				<engine:VisualElement class="wizard-footer-spacer" />
+				<engine:Button name="wizard-next-button" text="Next" class="wizard-button wizard-button-primary" />
+			</engine:VisualElement>
+
+			<engine:VisualElement name="creating-server-state" class="server-state is-hidden is-transparent">
+				<engine:VisualElement name="loading-wheel" class="loading-wheel" picking-mode="Ignore" />
+				<engine:Label name="creating-server-status" text="Creating Server..." class="server-status" />
+				<engine:Button name="creating-server-cancel-button" text="Cancel" class="wizard-button wizard-button-secondary loading-cancel-button" />
+			</engine:VisualElement>
+
+			<engine:VisualElement name="server-ready-state" class="server-state server-ready-state is-hidden is-transparent">
+				<engine:VisualElement class="server-tabs">
+					<engine:VisualElement name="server-tab-slider" class="server-tab-slider" picking-mode="Ignore" />
+					<engine:Button name="main-tab-button" text="Main" class="server-tab-button is-selected" />
+					<engine:Button name="chat-tab-button" text="Chat" class="server-tab-button" />
+				</engine:VisualElement>
+
+				<engine:VisualElement name="main-tab-content" class="server-tab-content">
+					<engine:VisualElement class="code-section server-section-box">
+						<engine:Label text="Code" class="player-list-title" />
+						<engine:VisualElement class="server-code-bubble">
+							<engine:TextField name="server-code-field" class="server-code-field" />
+							<engine:Button name="view-code-button" tooltip="Show code" class="code-icon-button">
+								<engine:Label name="view-code-icon" text="&#xf06e;" class="code-action-icon" picking-mode="Ignore" />
+							</engine:Button>
+							<engine:Button name="copy-code-button" tooltip="Copy code" class="copy-code-button">
+								<engine:Label name="copy-code-icon" text="&#xf0c5;" class="code-action-icon" picking-mode="Ignore" />
+							</engine:Button>
+						</engine:VisualElement>
+					</engine:VisualElement>
+					<engine:VisualElement class="players-section server-section-box">
+						<engine:Label text="Players" class="player-list-title" />
+						<engine:ScrollView name="player-list" class="player-list" />
+					</engine:VisualElement>
+				</engine:VisualElement>
+
+				<engine:VisualElement name="chat-tab-content" class="server-tab-content is-hidden">
+					<engine:ScrollView name="chat-message-list" class="chat-message-list" />
+					<engine:VisualElement class="chat-compose-row">
+						<engine:TextField name="chat-message-input" placeholder-text="Message" class="chat-message-input" />
+						<engine:Button name="chat-send-button" text="Send" class="chat-send-button" />
+					</engine:VisualElement>
+				</engine:VisualElement>
+
+				<engine:VisualElement name="settings-page" class="server-tab-content settings-page is-hidden">
+					<engine:VisualElement class="settings-header">
+						<engine:Label text="Settings" class="settings-title" />
+						<engine:Button name="settings-back-button" text="Back" class="settings-back-button" />
+					</engine:VisualElement>
+					<engine:Label text="Theme" class="settings-section-title" />
+					<engine:Label text="Choose how the Collaboration window looks." class="settings-description" />
+					<engine:VisualElement class="theme-grid">
+						<engine:Button name="theme-light-button" text="Light" class="theme-choice theme-light-preview" />
+						<engine:Button name="theme-dark-button" text="Dark" class="theme-choice theme-dark-preview" />
+						<engine:Button name="theme-extra-dark-button" text="Extra Dark" class="theme-choice theme-extra-dark-preview is-theme-selected" />
+						<engine:Button name="theme-midnight-button" text="Midnight" class="theme-choice theme-midnight-preview" />
+					</engine:VisualElement>
+				</engine:VisualElement>
+
+				<engine:Button name="server-menu-button" tooltip="Server menu" class="server-menu-button">
+					<engine:Label text="&#xf0c9;" class="server-menu-icon" picking-mode="Ignore" />
+				</engine:Button>
+
+				<engine:VisualElement name="server-context-menu" class="custom-context-menu server-context-menu is-menu-hidden">
+					<engine:Button name="server-settings-button" class="custom-menu-item">
+						<engine:Label text="&#xf013;" class="custom-menu-icon" picking-mode="Ignore" />
+						<engine:Label text="Settings" class="custom-menu-label" picking-mode="Ignore" />
+					</engine:Button>
+					<engine:Button name="close-server-button" class="custom-menu-item danger-menu-item last-menu-item">
+						<engine:Label text="&#xf011;" class="custom-menu-icon" picking-mode="Ignore" />
+						<engine:Label text="Close Server" class="custom-menu-label" picking-mode="Ignore" />
+					</engine:Button>
+				</engine:VisualElement>
+
+				<engine:VisualElement name="player-context-menu" class="custom-context-menu player-context-menu is-menu-hidden">
+					<engine:Button name="goto-player-button" class="custom-menu-item">
+						<engine:Label text="&#xf3c5;" class="custom-menu-icon" picking-mode="Ignore" />
+						<engine:Label text="Go To" class="custom-menu-label" picking-mode="Ignore" />
+					</engine:Button>
+					<engine:Button name="kick-player-button" class="custom-menu-item danger-menu-item last-menu-item">
+						<engine:Label text="&#xf05e;" class="custom-menu-icon" picking-mode="Ignore" />
+						<engine:Label text="Kick" class="custom-menu-label" picking-mode="Ignore" />
+					</engine:Button>
+				</engine:VisualElement>
+			</engine:VisualElement>
+		</engine:VisualElement>
+	</engine:VisualElement>
+
+</engine:UXML>
