@@ -145,6 +145,18 @@ public class Menu : EditorWindow
         public long lastSeenTicks;
     }
 
+    private sealed class TimeoutWebClient : WebClient
+    {
+        protected override WebRequest GetWebRequest(Uri address)
+        {
+            WebRequest request = base.GetWebRequest(address);
+            request.Timeout = 10000;
+            if (request is HttpWebRequest httpRequest)
+                httpRequest.ReadWriteTimeout = 10000;
+            return request;
+        }
+    }
+
     private void OnEnable()
     {
         SceneView.duringSceneGui -= DrawSceneChatOverlay;
@@ -360,9 +372,13 @@ public class Menu : EditorWindow
                 return;
             }
 
-            SetUpdateStatus(manual
-                ? "Verifying and downloading the current installation..."
-                : "A new version was found. Downloading it in the background...");
+            if (!manual)
+            {
+                SetUpdateStatus("Update available. Use Refresh installation from the menu when ready.");
+                return;
+            }
+
+            SetUpdateStatus("Verifying and downloading the current installation...");
             await DownloadAndInstallUpdate(latestCommit, manual);
         }
         catch (Exception exception)
@@ -428,7 +444,7 @@ public class Menu : EditorWindow
 
     private static WebClient CreateGithubClient()
     {
-        WebClient web = new WebClient();
+        WebClient web = new TimeoutWebClient();
         web.Headers[HttpRequestHeader.UserAgent] = "Unity-Collaboration-Menu";
         web.Headers[HttpRequestHeader.CacheControl] = "no-cache";
         web.Headers[HttpRequestHeader.Accept] = "application/vnd.github+json";
